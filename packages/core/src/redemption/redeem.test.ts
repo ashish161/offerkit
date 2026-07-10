@@ -531,6 +531,117 @@ describe.skipIf(!enabled)("redeem (live DB)", () => {
     if (customer) await db.delete(schema.customer).where(eq(schema.customer.id, customer.id));
   });
 
+  it("enforces a campaign per-user limit across vouchers in the same stack", async () => {
+    if (!db) throw new Error("db not initialized");
+    const [customer] = await db.insert(schema.customer).values({}).returning({ id: schema.customer.id });
+    const [campaign] = await db
+      .insert(schema.campaign)
+      .values({
+        name: "Stack campaign cap",
+        type: "DISCOUNT",
+        status: "active",
+        currency: "USD",
+        perUserRedemptionLimit: 1,
+      })
+      .returning({ id: schema.campaign.id });
+    if (!customer || !campaign) throw new Error("stack limit fixture insert failed");
+    const voucherA = await makeVoucher(db, { campaignId: campaign.id });
+    const voucherB = await makeVoucher(db, { campaignId: campaign.id });
+
+    const result = await stackRedeem(db, {
+      voucherCodes: [voucherA.code, voucherB.code],
+      customerId: customer.id,
+      order: { amount: 5_000, currency: "USD" },
+    });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.code).toBe("per_user_redemption_limit_reached");
+    const redemptions = await db
+      .select({ id: schema.redemption.id })
+      .from(schema.redemption)
+      .where(eq(schema.redemption.customerId, customer.id));
+    expect(redemptions).toHaveLength(0);
+
+    await cleanup(db, voucherA.id);
+    await cleanup(db, voucherB.id);
+    await db.delete(schema.campaign).where(eq(schema.campaign.id, campaign.id));
+    await db.delete(schema.customer).where(eq(schema.customer.id, customer.id));
+  });
+
+  it.each(["stack", "single"] as const)(
+    "serializes campaign per-user checks across concurrent vouchers for %s redemption",
+    async (mode) => {
+      if (!db) throw new Error("db not initialized");
+      const [customer] = await db
+        .insert(schema.customer)
+        .values({})
+        .returning({ id: schema.customer.id });
+      const [campaign] = await db
+        .insert(schema.campaign)
+        .values({
+          name: "Concurrent campaign cap",
+          type: "DISCOUNT",
+          status: "active",
+          currency: "USD",
+          perUserRedemptionLimit: 1,
+        })
+        .returning({ id: schema.campaign.id });
+      if (!customer || !campaign) throw new Error("concurrent limit fixture insert failed");
+      const existingVoucher = await makeVoucher(db, { campaignId: campaign.id });
+      const concurrentVoucher = await makeVoucher(db, { campaignId: campaign.id });
+
+      let customerLocked: (() => void) | undefined;
+      const customerLockedPromise = new Promise<void>((resolve) => {
+        customerLocked = resolve;
+      });
+      let releaseCustomer: (() => void) | undefined;
+      const releaseCustomerPromise = new Promise<void>((resolve) => {
+        releaseCustomer = resolve;
+      });
+      const blocker = db.transaction(async (tx) => {
+        await tx
+          .select({ id: schema.customer.id })
+          .from(schema.customer)
+          .where(eq(schema.customer.id, customer.id))
+          .for("no key update");
+        customerLocked?.();
+        await releaseCustomerPromise;
+        await tx.insert(schema.redemption).values({
+          voucherId: existingVoucher.id,
+          customerId: customer.id,
+          result: "SUCCESS",
+          amount: 500,
+        });
+      });
+
+      await customerLockedPromise;
+      const concurrent =
+        mode === "stack"
+          ? stackRedeem(db, {
+              voucherCodes: [concurrentVoucher.code],
+              customerId: customer.id,
+              order: { amount: 5_000, currency: "USD" },
+            })
+          : redeem(db, {
+              voucherCode: concurrentVoucher.code,
+              customerId: customer.id,
+              order: { amount: 5_000, currency: "USD" },
+            });
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      releaseCustomer?.();
+      await blocker;
+
+      const result = await concurrent;
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.code).toBe("per_user_redemption_limit_reached");
+
+      await cleanup(db, existingVoucher.id);
+      await cleanup(db, concurrentVoucher.id);
+      await db.delete(schema.campaign).where(eq(schema.campaign.id, campaign.id));
+      await db.delete(schema.customer).where(eq(schema.customer.id, customer.id));
+    },
+  );
+
   it("qualifies customer-held vouchers without writing redemption rows", async () => {
     if (!db) throw new Error("db not initialized");
     const customerExternalId = `qualify-ext-${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
