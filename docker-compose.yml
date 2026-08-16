@@ -29,6 +29,8 @@ services:
 
   web:
     image: ${OFFERKIT_IMAGE:-ghcr.io/offerkit/offerkit}:${OFFERKIT_IMAGE_TAG:-latest}
+    # Apple Silicon Mac: published image is amd64; without this Docker may fail to pull/run.
+    platform: linux/amd64
     restart: unless-stopped
     depends_on:
       postgres:
@@ -52,6 +54,8 @@ services:
       - "3000:3000"
 
   worker:
+    # Same as web — required on Apple Silicon Mac hosts.
+    platform: linux/amd64
     image: ${OFFERKIT_IMAGE:-ghcr.io/offerkit/offerkit}:${OFFERKIT_IMAGE_TAG:-latest}
     command: ["node", "apps/worker/dist/index.js"]
     restart: unless-stopped
