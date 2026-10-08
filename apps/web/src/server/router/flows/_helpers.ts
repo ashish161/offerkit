@@ -6,23 +6,28 @@ import { drizzle } from "drizzle-orm/node-postgres";
 import { migrate } from "drizzle-orm/node-postgres/migrator";
 import { OpenAPIHandler } from "@orpc/openapi/fetch";
 import { ZodSmartCoercionPlugin } from "@orpc/zod";
-import { schema, type Db } from "@offerkit/db";
+import { schema, setTestDbOverride, type Db } from "@offerkit/db";
+import { createPgliteTestDb, isPgliteTest } from "@offerkit/db/test-pglite";
 import { createClient, type Client } from "@offerkit/sdk";
 import { mintApiKey } from "@/lib/api-key";
+import { resetDbCache } from "@/lib/db";
 import { router } from "../index";
 
 // Shared scaffolding for SDK round-trip e2e tests under flows/.
 // Each test file imports getTestDb to lazily migrate a target Postgres
-// once per test process, mintTestKey to insert a scoped API key, and
-// makeClient to build a typed @offerkit/sdk client backed by a fake
-// fetch that drives the live oRPC handler in-process. No HTTP server,
-// no Next.js boot.
+// (or in-memory PGlite) once per test process, mintTestKey to insert a
+// scoped API key, and makeClient to build a typed @offerkit/sdk client
+// backed by a fake fetch that drives the live oRPC handler in-process.
 //
-// Tests skip cleanly without TEST_DATABASE_URL so the default
-// `pnpm -r test` stays infra-free.
+// Enable with either:
+//   TEST_DATABASE_URL / DATABASE_URL  → real Postgres
+//   OFFERKIT_TEST_PGLITE=1            → in-memory PGlite (CI)
+// Without either, suites skip so default `pnpm -r test` stays infra-free.
 
 export const TEST_DB_URL = process.env["TEST_DATABASE_URL"] ?? process.env["DATABASE_URL"];
-export const E2E_ENABLED = Boolean(TEST_DB_URL);
+export const E2E_ENABLED = Boolean(TEST_DB_URL) || isPgliteTest();
+/** True when using in-memory PGlite with no real Postgres URL. */
+export const PGLITE_ONLY = isPgliteTest() && !TEST_DB_URL;
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const migrationsFolder = path.resolve(
@@ -45,29 +50,56 @@ interface TestDbHandle {
 
 let cached: Promise<TestDbHandle> | null = null;
 
-/**
- * Lazily migrates the target Postgres once per test process and hands
- * the same Db back to every caller. Two test files running in sequence
- * (we set fileParallelism: false on the vitest config) reuse the same
- * pool and avoid re-running migrations.
- */
-export function getTestDb(url: string): Promise<TestDbHandle> {
-  if (cached) return cached;
+function seedTestSecrets(): void {
   // Better Auth needs the secret to mint hashes for password rows we
   // never use; the api-key.ts helper also reads it as the HMAC pepper.
   process.env["BETTER_AUTH_SECRET"] ??= "test-secret-1234567890123456789012";
   process.env["WEBHOOK_SECRET_ENCRYPTION_KEY"] ??=
     "test-webhook-encryption-key-with-at-least-32-characters";
-  process.env["DATABASE_URL"] = url;
+}
+
+/**
+ * Lazily migrates the target DB once per test process and hands the
+ * same Db back to every caller. Two test files running in sequence
+ * (we set fileParallelism: false on the vitest config) reuse the same
+ * handle and avoid re-running migrations.
+ *
+ * When using PGlite, also overrides `@offerkit/db` `getDb()` so routers
+ * share the in-memory instance (there is no connection URL to share).
+ */
+export function getTestDb(url: string | undefined = TEST_DB_URL): Promise<TestDbHandle> {
+  if (cached) return cached;
+  seedTestSecrets();
   cached = (async () => {
-    const pool = new Pool({ connectionString: url });
-    const migrator = drizzle(pool);
-    await migrate(migrator, { migrationsFolder });
-    const db = drizzle(pool, { schema, casing: "snake_case" });
+    if (url) {
+      process.env["DATABASE_URL"] = url;
+      const pool = new Pool({ connectionString: url });
+      const migrator = drizzle(pool);
+      await migrate(migrator, { migrationsFolder });
+      const db = drizzle(pool, { schema, casing: "snake_case" });
+      setTestDbOverride(db);
+      resetDbCache();
+      return {
+        db,
+        close: async () => {
+          setTestDbOverride(undefined);
+          resetDbCache();
+          await pool.end();
+        },
+      };
+    }
+    if (!isPgliteTest()) {
+      throw new Error("getTestDb: set TEST_DATABASE_URL or OFFERKIT_TEST_PGLITE=1");
+    }
+    const handle = await createPgliteTestDb(migrationsFolder);
+    setTestDbOverride(handle.db);
+    resetDbCache();
     return {
-      db,
+      db: handle.db,
       close: async () => {
-        await pool.end();
+        setTestDbOverride(undefined);
+        resetDbCache();
+        await handle.close();
       },
     };
   })();

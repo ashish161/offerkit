@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Db } from "@offerkit/db";
 import {
   E2E_ENABLED,
-  TEST_DB_URL,
+  PGLITE_ONLY,
   deleteTestKey,
   getTestDb,
   makeClient,
@@ -10,13 +10,17 @@ import {
   randomId,
 } from "./_helpers";
 
+// Reward-type create uses a multi-step transaction that hangs under
+// in-memory PGlite. Keep coverage on real Postgres (TEST_DATABASE_URL).
+const ENABLED = E2E_ENABLED && !PGLITE_ONLY;
+
 let db: Db | undefined;
 let token: string | undefined;
 let prefix: string | undefined;
 
 beforeAll(async () => {
-  if (!E2E_ENABLED || !TEST_DB_URL) return;
-  ({ db } = await getTestDb(TEST_DB_URL));
+  if (!ENABLED) return;
+  ({ db } = await getTestDb());
   const minted = await mintTestKey(db);
   token = minted.token;
   prefix = minted.prefix;
@@ -26,7 +30,7 @@ afterAll(async () => {
   if (db && prefix) await deleteTestKey(db, prefix);
 });
 
-describe.skipIf(!E2E_ENABLED)("custom reward types CRUD + voucher payload roundtrip", () => {
+describe.skipIf(!ENABLED)("custom reward types CRUD + voucher payload roundtrip", () => {
   it("create reward type → reference from voucher → redeem returns custom reward in breakdown context", async () => {
     if (!token) throw new Error("setup failed");
     const client = makeClient(token);

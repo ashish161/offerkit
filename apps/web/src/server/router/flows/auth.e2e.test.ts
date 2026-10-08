@@ -2,7 +2,6 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Db } from "@offerkit/db";
 import {
   E2E_ENABLED,
-  TEST_DB_URL,
   deleteTestKey,
   getTestDb,
   makeClient,
@@ -14,8 +13,8 @@ let db: Db | undefined;
 const cleanupPrefixes: string[] = [];
 
 beforeAll(async () => {
-  if (!E2E_ENABLED || !TEST_DB_URL) return;
-  ({ db } = await getTestDb(TEST_DB_URL));
+  if (!E2E_ENABLED) return;
+  ({ db } = await getTestDb());
 }, 30_000);
 
 afterAll(async () => {

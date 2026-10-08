@@ -1,19 +1,23 @@
-import { describe, expect, it } from "vitest";
-import { TEST_DB_URL, rawRequest } from "./_helpers";
+import { beforeAll, describe, expect, it } from "vitest";
+import { E2E_ENABLED, getTestDb, rawRequest } from "./_helpers";
 
 describe("health and readiness probes", () => {
+  beforeAll(async () => {
+    // When live DB is enabled (Postgres URL or PGlite), share the same
+    // handle so `/ready` sees a working `getDb()` override.
+    if (E2E_ENABLED) await getTestDb();
+  }, 30_000);
+
   it("returns liveness and database readiness through the public routes", async () => {
-    if (TEST_DB_URL) process.env["DATABASE_URL"] = TEST_DB_URL;
     const health = await rawRequest(new Request("http://test.local/api/v1/health"));
     expect(health.ok).toBe(true);
     await expect(health.json()).resolves.toMatchObject({ status: "ok" });
 
     const ready = await rawRequest(new Request("http://test.local/api/v1/ready"));
     expect(ready.ok).toBe(true);
-    const dbExpected = Boolean(TEST_DB_URL);
     await expect(ready.json()).resolves.toMatchObject({
-      status: dbExpected ? "ok" : "degraded",
-      checks: { db: dbExpected, worker: true },
+      status: E2E_ENABLED ? "ok" : "degraded",
+      checks: { db: E2E_ENABLED, worker: true },
     });
   });
 });

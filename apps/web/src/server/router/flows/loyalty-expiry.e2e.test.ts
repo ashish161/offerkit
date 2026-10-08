@@ -3,7 +3,6 @@ import type { Db } from "@offerkit/db";
 import { expirePoints } from "@offerkit/core/loyalty";
 import {
   E2E_ENABLED,
-  TEST_DB_URL,
   deleteTestKey,
   getTestDb,
   makeClient,
@@ -16,8 +15,8 @@ let token: string | undefined;
 let prefix: string | undefined;
 
 beforeAll(async () => {
-  if (!E2E_ENABLED || !TEST_DB_URL) return;
-  ({ db } = await getTestDb(TEST_DB_URL));
+  if (!E2E_ENABLED) return;
+  ({ db } = await getTestDb());
   const minted = await mintTestKey(db);
   token = minted.token;
   prefix = minted.prefix;

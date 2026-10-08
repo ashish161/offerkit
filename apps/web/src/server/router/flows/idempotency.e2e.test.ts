@@ -5,7 +5,6 @@ import { schema, type Db } from "@offerkit/db";
 import { checkAndRecordIdempotency } from "@/server/middleware/idempotency";
 import {
   E2E_ENABLED,
-  TEST_DB_URL,
   deleteTestKey,
   getTestDb,
   mintTestKey,
@@ -18,8 +17,8 @@ let token: string | undefined;
 let prefix: string | undefined;
 
 beforeAll(async () => {
-  if (!E2E_ENABLED || !TEST_DB_URL) return;
-  ({ db } = await getTestDb(TEST_DB_URL));
+  if (!E2E_ENABLED) return;
+  ({ db } = await getTestDb());
   const minted = await mintTestKey(db);
   token = minted.token;
   prefix = minted.prefix;

@@ -7,7 +7,8 @@
   "exports": {
     ".": "./src/index.ts",
     "./schema": "./src/schema/index.ts",
-    "./client": "./src/client.ts"
+    "./client": "./src/client.ts",
+    "./test-pglite": "./src/test-pglite.ts"
   },
   "scripts": {
     "lint": "eslint src",
@@ -23,6 +24,7 @@
     "pg": "^8.20.0"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "^0.5.5",
     "@offerkit/config": "workspace:*",
     "@types/node": "^25.6.2",
     "@types/pg": "^8.20.0",

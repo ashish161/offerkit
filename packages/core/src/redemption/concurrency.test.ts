@@ -5,9 +5,8 @@ import { redeem } from "./index.ts";
 import { getTestDb } from "./_test-db.ts";
 
 // Concurrency test exercises the FOR UPDATE lock against a real Postgres.
-// Skips gracefully without a DATABASE_URL so the default workspace test
-// run (and lefthook) doesn't depend on infra. Set TEST_DATABASE_URL or
-// DATABASE_URL to a throwaway db to enable.
+// Requires TEST_DATABASE_URL / DATABASE_URL — intentionally skipped under
+// OFFERKIT_TEST_PGLITE-only mode (lock semantics differ from Postgres).
 const url = process.env["TEST_DATABASE_URL"] ?? process.env["DATABASE_URL"];
 const enabled = Boolean(url);
 

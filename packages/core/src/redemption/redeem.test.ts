@@ -2,20 +2,19 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
 import { schema, type Db } from "@offerkit/db";
 import { qualify, redeem, rollback, stackRedeem, validate } from "./index.ts";
-import { getTestDb } from "./_test-db.ts";
+import { getTestDb, isLiveDbEnabled } from "./_test-db.ts";
 
-// Live-DB redemption suite. Skips without TEST_DATABASE_URL so the
-// default workspace test run stays infra-free. Set
-// TEST_DATABASE_URL=postgres://... to enable.
-const url = process.env["TEST_DATABASE_URL"] ?? process.env["DATABASE_URL"];
-const enabled = Boolean(url);
+// Live-DB redemption suite. Enable with TEST_DATABASE_URL (Postgres) or
+// OFFERKIT_TEST_PGLITE=1 (in-memory). Skips otherwise so default
+// `pnpm test` stays infra-free.
+const enabled = isLiveDbEnabled();
 
 let db: Db | undefined;
 let close: (() => Promise<void>) | undefined;
 
 beforeAll(async () => {
-  if (!enabled || !url) return;
-  const handle = await getTestDb(url);
+  if (!enabled) return;
+  const handle = await getTestDb();
   db = handle.db;
   close = handle.close;
 }, 30_000);

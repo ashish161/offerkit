@@ -1,107 +1,38 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { eq } from "drizzle-orm";
-import { Pool } from "pg";
-import { drizzle } from "drizzle-orm/node-postgres";
-import { migrate } from "drizzle-orm/node-postgres/migrator";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
-import { OpenAPIHandler } from "@orpc/openapi/fetch";
-import { ZodSmartCoercionPlugin } from "@orpc/zod";
-import { schema, type Db } from "@offerkit/db";
-import { createClient } from "@offerkit/sdk";
-import { mintApiKey } from "@/lib/api-key";
-import { router } from "./index";
+import type { Db } from "@offerkit/db";
+import {
+  E2E_ENABLED,
+  deleteTestKey,
+  getTestDb,
+  makeClient,
+  mintTestKey,
+} from "./flows/_helpers";
 
-// SDK contract end-to-end test. Drives the typed @offerkit/sdk
-// client against the live oRPC router via a fake fetch — no HTTP
-// server needed, no Next.js boot. Skips without TEST_DATABASE_URL so
-// the default workspace test run stays infra-free.
-const url = process.env["TEST_DATABASE_URL"] ?? process.env["DATABASE_URL"];
-const enabled = Boolean(url);
+// SDK contract end-to-end test. Drives the typed @offerkit/sdk client
+// against the live oRPC router via a fake fetch. Enable with
+// TEST_DATABASE_URL or OFFERKIT_TEST_PGLITE=1.
 
-const here = path.dirname(fileURLToPath(import.meta.url));
-const migrationsFolder = path.resolve(
-  here,
-  "..",
-  "..",
-  "..",
-  "..",
-  "..",
-  "packages",
-  "db",
-  "drizzle",
-);
-
-let pool: Pool | undefined;
 let db: Db | undefined;
-let mintedToken: string | undefined;
+let token: string | undefined;
+let prefix: string | undefined;
 
 beforeAll(async () => {
-  if (!enabled || !url) return;
-  process.env["BETTER_AUTH_SECRET"] ??= "test-secret-1234567890123456789012";
-  process.env["WEBHOOK_SECRET_ENCRYPTION_KEY"] ??=
-    "test-webhook-encryption-key-with-at-least-32-characters";
-  process.env["DATABASE_URL"] = url;
-  pool = new Pool({ connectionString: url });
-  const migrator = drizzle(pool);
-  await migrate(migrator, { migrationsFolder });
-  db = drizzle(pool, { schema, casing: "snake_case" });
-
-  const minted = mintApiKey();
-  await db
-    .insert(schema.apiKey)
-    .values({
-      id: `key_${minted.prefix}`,
-      name: "e2e test",
-      prefix: minted.prefix,
-      hashedSecret: minted.hashedSecret,
-      scopes: ["*"],
-      rateLimitRps: 10_000,
-    })
-    .onConflictDoNothing();
-  mintedToken = minted.token;
+  if (!E2E_ENABLED) return;
+  ({ db } = await getTestDb());
+  const minted = await mintTestKey(db);
+  token = minted.token;
+  prefix = minted.prefix;
 }, 30_000);
 
 afterAll(async () => {
-  if (db && mintedToken) {
-    const prefix = mintedToken.split("_")[1];
-    if (prefix) {
-      await db.delete(schema.apiKey).where(eq(schema.apiKey.prefix, prefix));
-    }
-  }
-  await pool?.end();
+  if (db && prefix) await deleteTestKey(db, prefix);
 });
 
-describe.skipIf(!enabled)("SDK contract e2e", () => {
+describe.skipIf(!E2E_ENABLED)("SDK contract e2e", () => {
   it("typed client mints a campaign + voucher and redeems it", async () => {
-    if (!db || !mintedToken) throw new Error("setup failed");
+    if (!token) throw new Error("setup failed");
 
-    const handler = new OpenAPIHandler(router, {
-      plugins: [new ZodSmartCoercionPlugin()],
-    });
-
-    // The SDK passes a Request object as `input` with body/method/headers
-    // already attached; we forward it straight to the oRPC handler so
-    // headers (notably Authorization) and the streamed body survive.
-    const fakeFetch: typeof fetch = async (input, init) => {
-      const req =
-        input instanceof Request
-          ? init
-            ? new Request(input, init)
-            : input
-          : new Request(typeof input === "string" ? input : input.toString(), init);
-      const { response } = await handler.handle(req, {
-        prefix: "/api/v1",
-        context: { request: req, headers: req.headers },
-      });
-      return response ?? new Response("not found", { status: 404 });
-    };
-
-    const client = createClient({
-      baseUrl: "http://test.local",
-      apiKey: mintedToken,
-      fetch: fakeFetch,
-    });
+    const client = makeClient(token);
 
     const campaign = await client.campaigns.create({
       name: `e2e-${Date.now()}`,

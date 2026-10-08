@@ -66,7 +66,9 @@ services:
         condition: service_healthy
     environment:
       DATABASE_URL: postgres://offerkit:dev@postgres:5432/offerkit
-      REDIS_URL: redis://redis:6379
+      # Published image + new BullMQ rejects queue name "offerkit:jobs" (colon).
+      # Omit REDIS_URL so the worker uses the Postgres job fallback instead.
+      # REDIS_URL: redis://redis:6379
       WEBHOOK_SECRET_ENCRYPTION_KEY: ${WEBHOOK_SECRET_ENCRYPTION_KEY:-please-change-this-webhook-encryption-key}
       WORKER_HEALTH_PORT: 9091
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}

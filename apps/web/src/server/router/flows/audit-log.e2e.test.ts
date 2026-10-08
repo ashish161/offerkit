@@ -4,7 +4,6 @@ import type { Db } from "@offerkit/db";
 import { schema } from "@offerkit/db";
 import {
   E2E_ENABLED,
-  TEST_DB_URL,
   deleteTestKey,
   getTestDb,
   makeClient,
@@ -18,8 +17,8 @@ let prefix: string | undefined;
 let keyId: string | undefined;
 
 beforeAll(async () => {
-  if (!E2E_ENABLED || !TEST_DB_URL) return;
-  ({ db } = await getTestDb(TEST_DB_URL));
+  if (!E2E_ENABLED) return;
+  ({ db } = await getTestDb());
   const minted = await mintTestKey(db);
   token = minted.token;
   prefix = minted.prefix;
