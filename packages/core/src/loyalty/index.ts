@@ -427,3 +427,7 @@ export async function listHistory(db: Db, memberId: string, limit = 100) {
     limit,
   });
 }
+
+// QR Loyalty POC helpers (card codes, scanEarn). qr.ts imports earn() from
+// this module, so keep this re-export at the end of the file.
+export * from "./qr.ts";
