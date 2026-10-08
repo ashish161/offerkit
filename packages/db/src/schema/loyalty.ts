@@ -138,6 +138,10 @@ export const loyaltyMember = pgTable(
     currentTierId: uuid("current_tier_id").references(() => loyaltyTier.id, {
       onDelete: "set null",
     }),
+    // Short human-typable code for the QR Loyalty POC: the customer's card
+    // page is /card/{cardCode} and merchants type the code to credit points.
+    // Generated lazily via ensureCardCode; null until first needed.
+    cardCode: text("card_code"),
     enrolledAt: timestamp("enrolled_at", { withTimezone: true }).notNull().defaultNow(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
@@ -145,6 +149,7 @@ export const loyaltyMember = pgTable(
   (t) => [
     unique("loyalty_member_customer_program_unique").on(t.customerId, t.programId),
     index("loyalty_member_program_id_idx").on(t.programId),
+    unique("loyalty_member_card_code_unique").on(t.cardCode),
   ],
 );
 
