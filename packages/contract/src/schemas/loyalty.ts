@@ -111,6 +111,7 @@ export const loyaltyMemberOutput = z.object({
   balance: z.number().int(),
   lifetimePoints: z.number().int(),
   currentTierId: z.string().uuid().nullable(),
+  cardCode: z.string().nullable().optional(),
   enrolledAt: z.string().datetime(),
 });
 

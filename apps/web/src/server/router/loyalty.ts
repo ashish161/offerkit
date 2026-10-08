@@ -7,6 +7,7 @@ import {
   earn as earnPoints,
   redeemReward,
   listHistory,
+  ensureCardCode,
 } from "@offerkit/core/loyalty";
 import type { RequestContext } from "@/server/context";
 import { db } from "@/lib/db";
@@ -80,6 +81,7 @@ function toMember(row: MemberRow) {
     balance: row.balance,
     lifetimePoints: row.lifetimePoints,
     currentTierId: row.currentTierId,
+    cardCode: row.cardCode,
     enrolledAt: row.enrolledAt.toISOString(),
   };
 }
@@ -373,6 +375,9 @@ const membersGet = os.loyalty.members.get.use(requireSession).handler(async ({ i
     where: eq(schema.loyaltyMember.id, input.params.id),
   });
   if (!row) throw new ORPCError("NOT_FOUND", { message: "Member not found" });
+  // Lazily mint the QR Loyalty card code so the dashboard can always
+  // show a shareable code/link for this member.
+  if (!row.cardCode) row.cardCode = await ensureCardCode(db(), row.id);
   return toMember(row);
 });
 

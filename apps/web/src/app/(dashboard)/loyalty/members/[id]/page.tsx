@@ -129,6 +129,35 @@ export default function LoyaltyMemberPage({ params }: PageProps) {
         </div>
       </header>
 
+      {member.cardCode && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">
+              <T>Loyalty card</T>
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="flex flex-wrap items-center gap-3">
+            <Badge variant="outline" className="font-mono text-base">
+              {member.cardCode}
+            </Badge>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                const url = `${window.location.origin}/card/${member.cardCode ?? ""}`;
+                void navigator.clipboard.writeText(url);
+                toast.success(gt("Card link copied"));
+              }}
+            >
+              <T>Copy card link</T>
+            </Button>
+            <Button variant="ghost" size="sm" render={<Link href={`/card/${member.cardCode}`} />}>
+              <T>Open card</T>
+            </Button>
+          </CardContent>
+        </Card>
+      )}
+
       <div className="grid gap-4 lg:grid-cols-3">
         <Card>
           <CardHeader>
