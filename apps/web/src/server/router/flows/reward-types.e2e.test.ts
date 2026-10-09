@@ -86,6 +86,14 @@ describe.skipIf(!ENABLED)("custom reward types CRUD + voucher payload roundtrip"
     await expect(client.rewardTypes.get({ params: { id: created.id } })).rejects.toThrow(
       /not found/i,
     );
+
+    const recreated = await client.rewardTypes.create({
+      key,
+      name: "Free Shipping Replacement",
+      payloadSchema: { type: "object", properties: { lanes: { type: "array" } } },
+    });
+    expect(recreated.id).not.toBe(created.id);
+    expect(recreated.key).toBe(key);
   });
 
   it("lists reward types and creates a new active revision when payload schema changes", async () => {

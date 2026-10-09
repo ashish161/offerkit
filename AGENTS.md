@@ -250,3 +250,27 @@ Re-exported from `@offerkit/core/loyalty` (see end of `loyalty/index.ts`).
 - The repo currently has **no seed/demo script** — only `seed-admin.ts`
   (first admin). QR demo data was seeded ad-hoc (campaign `QR POC Program`,
   rule `qr.scan`/divisor 1000).
+
+---
+
+## 6. Upstream-merge discipline (added after first upstream merge)
+
+Our fork is `origin` (ashish161/offerkit); `upstream` = offerkit/offerkit.
+Because the POC lives partly in files upstream also changes (`schema/loyalty.ts`,
+`drizzle/meta/_journal.json`), every upstream pull is a manual merge.
+
+- **Migration-number collisions are expected**: upstream and the fork both
+  generate `NNNN_*` migrations from wherever their journal stands. Our fork
+  journal is authoritative — on merge, keep our `0024_handy_piledriver` +
+  `0025_sharp_korath`, drop upstream's `0024_dashing_prism`, then run
+  `pnpm --filter @offerkit/db generate` so the *delta* is re-emitted as the next
+  fork migration (`0026_…`) with a fresh snapshot. Never ship two `NNNN_*`
+  migrations with the same number in one journal.
+- **Keep-ours bias**: `AGENTS.md` conflicts resolve to the fork's version
+  (upstream's "Agent Instructions" live in their history; reuse only rules that
+  apply here — the fork owns its own release process).
+- After every merge: `pnpm install`, then the full pre-commit run (typecheck +
+  lint + test), then `pnpm --filter @offerkit/db migrate` against the dev DB.
+- Upstream governance that also applies here: use the authenticated `gh` CLI for
+  GitHub ops; add a changeset when a public package's behavior or interface
+  changes; never merge/release/deploy unless explicitly asked.

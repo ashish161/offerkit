@@ -183,6 +183,13 @@
       "when": 1791515846129,
       "tag": "0025_sharp_korath",
       "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1791519471714,
+      "tag": "0026_rare_earthquake",
+      "breakpoints": true
     }
   ]
 }
