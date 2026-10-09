@@ -483,6 +483,24 @@ const eventId = billEventId(billNumber);
     earningRuleId: rule?.id,
     eventId,
     note: input.note ?? `QR scan · bill ${billNumber}`,
+    emit: (outcome) => ({
+      type: "loyalty.points.earned",
+      entityId: member.memberId,
+      payload: {
+        memberId: member.memberId,
+        customerId: member.customerId,
+        programId: member.programId,
+        billNumber,
+        amountMinor: input.amountMinor,
+        basePoints,
+        delta: outcome.delta,
+        balance: outcome.balance,
+        lifetimePoints: outcome.lifetimePoints,
+        tierId: outcome.tierId,
+        earningRuleId: rule?.id ?? null,
+        source: "qr.scan",
+      },
+    }),
   });
   if (!result.ok) return result;
 

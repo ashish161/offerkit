@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import type { Db } from "@offerkit/db";
+import { desc, eq } from "drizzle-orm";
+import { schema, type Db } from "@offerkit/db";
 import { ensureCardCode } from "@offerkit/core/loyalty";
 import { handleScan } from "@/server/qr-loyalty/scan";
 import {
@@ -84,6 +85,24 @@ describe.skipIf(!E2E_ENABLED)("qr scan: card code → bill amount → points", (
     expect(body.delta).toBe(250); // no tier multiplier (no tiers)
     expect(body.balance).toBe(250);
     expect(body.alreadyCredited).toBe(false);
+  });
+
+  it("emits a loyalty.points.earned event on credit", async () => {
+    if (!db) throw new Error("no db");
+    const billNumber = nextBill();
+    const res = await scanRequest({ cardCode, amount: 1000, billNumber });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+
+    const ev = await db.query.event.findFirst({
+      where: eq(schema.event.entityId, memberId),
+      orderBy: [desc(schema.event.createdAt)],
+    });
+    expect(ev).toBeTruthy();
+    expect(ev?.type).toBe("loyalty.points.earned");
+    expect(ev?.payload["billNumber"]).toBe(billNumber);
+    expect(ev?.payload["delta"]).toBe(body.delta);
+    expect(ev?.payload["memberId"]).toBe(memberId);
   });
 
   it("lowercases/whitespace card codes are accepted", async () => {
@@ -284,7 +303,7 @@ describe.skipIf(!E2E_ENABLED)("qr scan: card code → bill amount → points", (
       .limit(1);
     expect(mine).toBeDefined();
     expect(mine?.cardCode).toBe(cardCode);
-    // 250 + 10 + 50 + 100 (phone) + 10 (card precedence) = 420
-    expect(mine?.balance).toBe(420);
+    // 250 + 10 + 50 + 100 (phone) + 10 (card precedence) + 100 (event) = 520
+    expect(mine?.balance).toBe(520);
   });
 });

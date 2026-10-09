@@ -1,5 +1,6 @@
 import { and, asc, desc, eq, gt, isNull, lt, sql } from "drizzle-orm";
 import { schema, type Db } from "@offerkit/db";
+import { emitEvent, type EmitInput } from "../events/index.ts";
 import { logger } from "../observability/index.ts";
 
 const log = logger.child({ component: "loyalty" });
@@ -60,6 +61,13 @@ export interface EarnInput {
    * Adjustments (manual edits) typically pass false.
    */
   applyMultiplier?: boolean;
+  /**
+   * Optional domain event emitted inside the same transaction as the ledger
+   * write, so the event can never outlive/lead the point credit. The callback
+   * receives the committed outcome (delta, new balance, tier) to build the
+   * payload. Only fires on a real credit — replays never reach earn().
+   */
+  emit?: (outcome: EarnOutcome) => EmitInput;
 }
 
 export interface EarnOutcome {
@@ -138,6 +146,16 @@ export async function earn(db: Db, input: EarnInput): Promise<LoyaltyResult<Earn
       },
       "loyalty earn",
     );
+
+    if (input.emit) {
+      await emitEvent(tx, input.emit({
+        transactionId: txRow.id,
+        delta,
+        balance: newBalance,
+        lifetimePoints: newLifetime,
+        tierId: nextTier?.id ?? null,
+      }));
+    }
 
     return {
       ok: true,
