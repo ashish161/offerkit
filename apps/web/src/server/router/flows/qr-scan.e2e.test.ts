@@ -87,12 +87,23 @@ describe.skipIf(!E2E_ENABLED)("qr scan: card code → bill amount → points", (
     expect(body.alreadyCredited).toBe(false);
   });
 
-  it("emits a loyalty.points.earned event on credit", async () => {
+  it("emits a loyalty.points.earned event and mirrors a PAID order", async () => {
     if (!db) throw new Error("no db");
     const billNumber = nextBill();
     const res = await scanRequest({ cardCode, amount: 1000, billNumber });
     expect(res.status).toBe(200);
     const body = await res.json();
+    expect(typeof body.orderId).toBe("string");
+
+    const order = await db.query.order.findFirst({
+      where: eq(schema.order.externalId, billNumber),
+    });
+    expect(order).toBeTruthy();
+    expect(order?.status).toBe("PAID");
+    expect(order?.amount).toBe(100_000); // ₹1,000 → 100000 paise
+    expect(order?.currency).toBe("INR");
+    expect(order?.metadata["source"]).toBe("qr.scan");
+    expect(body.orderId).toBe(order?.id);
 
     const ev = await db.query.event.findFirst({
       where: eq(schema.event.entityId, memberId),
@@ -103,6 +114,7 @@ describe.skipIf(!E2E_ENABLED)("qr scan: card code → bill amount → points", (
     expect(ev?.payload["billNumber"]).toBe(billNumber);
     expect(ev?.payload["delta"]).toBe(body.delta);
     expect(ev?.payload["memberId"]).toBe(memberId);
+    expect(ev?.payload["orderId"]).toBe(order?.id);
   });
 
   it("lowercases/whitespace card codes are accepted", async () => {

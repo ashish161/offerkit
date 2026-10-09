@@ -1,9 +1,11 @@
 import { and, asc, desc, eq, gt, isNull, lt, sql } from "drizzle-orm";
 import { schema, type Db } from "@offerkit/db";
-import { emitEvent, type EmitInput } from "../events/index.ts";
 import { logger } from "../observability/index.ts";
 
 const log = logger.child({ component: "loyalty" });
+
+/** A transaction handle within the current Db (shared with core event/order writes). */
+export type EarnTx = Parameters<Parameters<Db["transaction"]>[0]>[0];
 
 export type LoyaltyFailureCode =
   | "member_not_found"
@@ -62,12 +64,12 @@ export interface EarnInput {
    */
   applyMultiplier?: boolean;
   /**
-   * Optional domain event emitted inside the same transaction as the ledger
-   * write, so the event can never outlive/lead the point credit. The callback
-   * receives the committed outcome (delta, new balance, tier) to build the
-   * payload. Only fires on a real credit — replays never reach earn().
+   * Optional side effect run inside the same transaction as the ledger write,
+   * receiving the committed outcome and the transaction handle. Used by the QR
+   * scan flow to create an order and emit a domain event atomically with the
+   * point credit. Only fires on a real credit — replays never reach earn().
    */
-  emit?: (outcome: EarnOutcome) => EmitInput;
+  onEarned?: (outcome: EarnOutcome, tx: EarnTx) => Promise<void>;
 }
 
 export interface EarnOutcome {
@@ -147,24 +149,15 @@ export async function earn(db: Db, input: EarnInput): Promise<LoyaltyResult<Earn
       "loyalty earn",
     );
 
-    if (input.emit) {
-      await emitEvent(tx, input.emit({
-        transactionId: txRow.id,
-        delta,
-        balance: newBalance,
-        lifetimePoints: newLifetime,
-        tierId: nextTier?.id ?? null,
-      }));
-    }
-
-    return {
-      ok: true,
+    const outcome: EarnOutcome = {
       transactionId: txRow.id,
       delta,
       balance: newBalance,
       lifetimePoints: newLifetime,
       tierId: nextTier?.id ?? null,
     };
+    if (input.onEarned) await input.onEarned(outcome, tx);
+    return { ok: true, ...outcome };
   });
 }
 

@@ -198,10 +198,21 @@ Re-exported from `@offerkit/core/loyalty` (see end of `loyalty/index.ts`).
   whitespace/non-alphanumerics before normalization.
 - Earning rule selection: active rule with `event: "qr.scan"` → any active
   rule → fallback `per_cents/100` (1 pt per major unit).
+- **A credited scan mirrors an order + emits an event.** Inside the *same*
+  transaction as the point credit (`earn`'s optional `onEarned` hook —
+  `packages/core/src/loyalty/index.ts`), `scanEarn` (a) inserts an `order`
+  (`externalId = billNumber`, `status: "PAID"`, `amount`, `currency` from
+  campaign, empty `items`, `metadata.source = "qr.scan"`) so scans appear on the
+  Orders page, and (b) emits `loyalty.points.earned` (payload includes
+  member/customer/bill/amount/delta/balance/tier/`orderId`) so Events +
+  webhooks fire. Only on a real credit — bill replays create neither. Response
+  includes `orderId`. This is a *mirror* of the POS bill, not a replacement for
+  an itemised POS integration (the unique `order.externalId` would collide if a
+  real integration later pushed the same bill numbers).
 - `loyaltyMemberOutput` now includes optional `cardCode`; `members.get`
   mints one on demand (lazy `ensureCardCode`).
 - Unit tests: `packages/core/src/loyalty/qr.test.ts`.
-  E2E: `apps/web/src/server/router/flows/qr-scan.e2e.test.ts` (16 cases).
+  E2E: `apps/web/src/server/router/flows/qr-scan.e2e.test.ts` (19 cases).
 
 ### POC limitations (deliberate, next steps)
 
@@ -213,7 +224,6 @@ Re-exported from `@offerkit/core/loyalty` (see end of `loyalty/index.ts`).
   (would need `qrcode` or `next/og` + encoder).
 - No `Idempotency-Key` on the public scan route itself — idempotency rides on
   the **`billNumber`** body field instead (`eventId = qr:{billNumber}`).
-- No webhook/event emitted on `scanEarn` (core `earn` doesn't `emitEvent`).
 - Card code is a bearer secret — anyone with it can see the balance.
 - `quickEnroll` locks nothing: two concurrent swipes for the same unknown phone
   can race and create two customers (no unique index on phone, by design).

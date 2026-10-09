@@ -2,6 +2,7 @@ import { and, desc, eq, sql } from "drizzle-orm";
 import { schema, type Db } from "@offerkit/db";
 import type { LoyaltyEarnFormula } from "@offerkit/db/schema";
 import { generateCode } from "../codes/generate.ts";
+import { emitEvent } from "../events/index.ts";
 import { earn, type LoyaltyResult, type EarnOutcome } from "./index.ts";
 
 /**
@@ -203,6 +204,11 @@ export interface ScanEarnOutcome extends EarnOutcome {
   cardCode?: string;
   /** True when this scan created the customer + member on the spot. */
   enrolled?: boolean;
+  /**
+   * OfferKit order mirrored from the scan (keyed by bill number). Null when no
+   * order was created — e.g. a replayed bill.
+   */
+  orderId?: string | null;
 }
 
 /** Prefix isolates QR bill event ids from other ledger event ids. */
@@ -477,30 +483,64 @@ const eventId = billEventId(billNumber);
     };
   }
 
+  const creditMember = member;
+  let orderId: string | null = null;
   const result = await earn(db, {
-    memberId: member.memberId,
+    memberId: creditMember.memberId,
     basePoints,
     earningRuleId: rule?.id,
     eventId,
     note: input.note ?? `QR scan · bill ${billNumber}`,
-    emit: (outcome) => ({
-      type: "loyalty.points.earned",
-      entityId: member.memberId,
-      payload: {
-        memberId: member.memberId,
-        customerId: member.customerId,
-        programId: member.programId,
-        billNumber,
-        amountMinor: input.amountMinor,
-        basePoints,
-        delta: outcome.delta,
-        balance: outcome.balance,
-        lifetimePoints: outcome.lifetimePoints,
-        tierId: outcome.tierId,
-        earningRuleId: rule?.id ?? null,
-        source: "qr.scan",
-      },
-    }),
+    onEarned: async (outcome, tx) => {
+      // Mirror the scanned bill as an OfferKit order so operators can search it
+      // in the dashboard. We have no POS integration, so this scan IS the only
+      // purchase signal. Keyed by bill number (unique externalId) for
+      // idempotency; the POS stays authoritative for itemised sales.
+      const [row] = await tx
+        .select({ currency: schema.campaign.currency })
+        .from(schema.loyaltyProgram)
+        .innerJoin(schema.campaign, eq(schema.campaign.id, schema.loyaltyProgram.campaignId))
+        .where(eq(schema.loyaltyProgram.id, creditMember.programId))
+        .limit(1);
+      const [order] = await tx
+        .insert(schema.order)
+        .values({
+          externalId: billNumber,
+          customerId: creditMember.customerId,
+          amount: input.amountMinor,
+          currency: row?.currency ?? "USD",
+          status: "PAID",
+          items: [],
+          metadata: {
+            source: "qr.scan",
+            memberId: creditMember.memberId,
+            basePoints,
+            delta: outcome.delta,
+          },
+        })
+        .returning({ id: schema.order.id });
+      orderId = order?.id ?? null;
+
+      await emitEvent(tx, {
+        type: "loyalty.points.earned",
+        entityId: creditMember.memberId,
+        payload: {
+          memberId: creditMember.memberId,
+          customerId: creditMember.customerId,
+          programId: creditMember.programId,
+          billNumber,
+          amountMinor: input.amountMinor,
+          basePoints,
+          delta: outcome.delta,
+          balance: outcome.balance,
+          lifetimePoints: outcome.lifetimePoints,
+          tierId: outcome.tierId,
+          earningRuleId: rule?.id ?? null,
+          orderId,
+          source: "qr.scan",
+        },
+      });
+    },
   });
   if (!result.ok) return result;
 
@@ -516,6 +556,7 @@ const eventId = billEventId(billNumber);
     earningRuleId: rule?.id ?? null,
     alreadyCredited: false,
     billNumber,
+    orderId,
     ...(enrolled ? { cardCode: enrolled.cardCode, enrolled: enrolled.created } : {}),
   };
 }
