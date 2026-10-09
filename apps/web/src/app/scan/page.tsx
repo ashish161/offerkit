@@ -27,6 +27,7 @@ type ScanResult = ScanSuccess | ScanFailure;
 
 export default function ScanPage() {
   const [cardCode, setCardCode] = useState("");
+  const [phone, setPhone] = useState("");
   const [amount, setAmount] = useState("");
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<ScanResult | null>(null);
@@ -35,6 +36,10 @@ export default function ScanPage() {
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (busy) return;
+    if (!cardCode.trim() && !phone.trim()) {
+      setError("Enter a card code or phone number");
+      return;
+    }
     setBusy(true);
     setError(null);
     setResult(null);
@@ -42,12 +47,18 @@ export default function ScanPage() {
       const res = await fetch("/api/scan", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ cardCode, amount: Number(amount) }),
+        body: JSON.stringify({
+          ...(cardCode.trim() ? { cardCode: cardCode.trim() } : {}),
+          ...(phone.trim() ? { phone: phone.trim() } : {}),
+          amount: Number(amount),
+        }),
       });
       const body = (await res.json()) as ScanResult;
       if (body.ok) {
         setResult(body);
         setAmount("");
+        setCardCode("");
+        setPhone("");
       } else {
         setError(body.message);
       }
@@ -84,8 +95,25 @@ export default function ScanPage() {
                 className="font-mono uppercase"
                 value={cardCode}
                 onChange={(e) => setCardCode(e.target.value.toUpperCase())}
-                required
               />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="phone">
+                <T>Phone (optional)</T>
+              </Label>
+              <Input
+                id="phone"
+                name="phone"
+                type="tel"
+                inputMode="tel"
+                autoComplete="off"
+                placeholder="e.g. 9096444567"
+                value={phone}
+                onChange={(e) => setPhone(e.target.value)}
+              />
+              <p className="text-xs text-muted-foreground">
+                <T>Enter the card code or the customer&apos;s phone number.</T>
+              </p>
             </div>
             <div className="space-y-2">
               <Label htmlFor="amount">

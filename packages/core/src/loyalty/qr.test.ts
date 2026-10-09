@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { LoyaltyEarnFormula } from "@offerkit/db/schema";
-import { computeEarnPoints } from "./qr.ts";
+import { computeEarnPoints, normalizePhone } from "./qr.ts";
 
 describe("computeEarnPoints", () => {
   it("per_cents: floor(amountMinor / divisor)", () => {
@@ -46,5 +46,20 @@ describe("computeEarnPoints", () => {
   it("invalid divisor returns 0", () => {
     expect(computeEarnPoints({ kind: "per_cents", divisor: 0 }, 1000)).toBe(0);
     expect(computeEarnPoints({ kind: "per_cents", divisor: -1 }, 1000)).toBe(0);
+  });
+});
+
+describe("normalizePhone", () => {
+  it("returns the last 10 digits regardless of formatting", () => {
+    expect(normalizePhone("9096444567")).toBe("9096444567");
+    expect(normalizePhone("+91 90964 44567")).toBe("9096444567");
+    expect(normalizePhone("090964 44567")).toBe("9096444567");
+    expect(normalizePhone("(+91) 90964-44567")).toBe("9096444567");
+  });
+
+  it("returns null when there are too few digits to be a phone", () => {
+    expect(normalizePhone("")).toBeNull();
+    expect(normalizePhone("12345")).toBeNull();
+    expect(normalizePhone("K7XQ2M4A")).toBeNull();
   });
 });

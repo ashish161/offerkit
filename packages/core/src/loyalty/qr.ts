@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { schema, type Db } from "@offerkit/db";
 import type { LoyaltyEarnFormula } from "@offerkit/db/schema";
 import { generateCode } from "../codes/generate.ts";
@@ -136,8 +136,51 @@ export async function getMemberByCardCode(db: Db, cardCode: string): Promise<Car
   return member ?? null;
 }
 
+const PHONE_LOOKUP_COLUMNS = {
+  memberId: schema.loyaltyMember.id,
+  customerId: schema.loyaltyMember.customerId,
+  programId: schema.loyaltyMember.programId,
+  balance: schema.loyaltyMember.balance,
+  lifetimePoints: schema.loyaltyMember.lifetimePoints,
+  currentTierId: schema.loyaltyMember.currentTierId,
+} as const;
+
+/**
+ * Normalize a phone number to its last 10 digits for matching, so
+ * `+91 90964 44567`, `090964 44567`, and `9096444567` all resolve to the
+ * same customer. Returns null when there are too few digits to be a phone.
+ */
+export function normalizePhone(raw: string): string | null {
+  const digits = raw.replace(/\D/g, "");
+  if (digits.length < 10) return null;
+  return digits.slice(-10);
+}
+
+/**
+ * Resolve a member by the customer's phone number (last-10-digit match,
+ * formatting-insensitive). Phone is an alias, never the canonical
+ * identifier — member identity remains the card code + customer uuid.
+ * null when no customer matches or they are not enrolled.
+ */
+export async function getMemberByPhone(db: Db, phone: string): Promise<CardLookup | null> {
+  const normalized = normalizePhone(phone);
+  if (!normalized) return null;
+  const [member] = await db
+    .select(PHONE_LOOKUP_COLUMNS)
+    .from(schema.loyaltyMember)
+    .innerJoin(schema.customer, eq(schema.customer.id, schema.loyaltyMember.customerId))
+    .where(
+      sql`right(regexp_replace(coalesce(${schema.customer.phone}, ''), '\\D', '', 'g'), 10) = ${normalized}`,
+    )
+    .limit(1);
+  return member ?? null;
+}
+
 export interface ScanEarnInput {
-  cardCode: string;
+  /** Card code shown on the customer's card. Prefer this over phone. */
+  cardCode?: string;
+  /** Phone alias — used only when no matching card code is supplied. */
+  phone?: string;
   /** Bill amount in minor currency units (paise). */
   amountMinor: number;
   note?: string;
@@ -153,9 +196,9 @@ export interface ScanEarnOutcome extends EarnOutcome {
 }
 
 /**
- * Merchant scan flow: card code + bill amount → credited points.
+ * Merchant scan flow: card code (or phone alias) + bill amount → credited points.
  *
- * 1. resolve member by card code
+ * 1. resolve member by card code, falling back to phone when given
  * 2. resolve the program's scan earning rule (or default 1 pt / major unit)
  * 3. compute points from the bill amount
  * 4. credit via earn() (tier multiplier applies)
@@ -167,10 +210,18 @@ export async function scanEarn(db: Db, input: ScanEarnInput): Promise<LoyaltyRes
   if (!Number.isFinite(input.amountMinor) || input.amountMinor <= 0) {
     return { ok: false, code: "validation_error", message: "Bill amount must be positive" };
   }
+  if (!input.cardCode && !input.phone) {
+    return { ok: false, code: "validation_error", message: "Card code or phone is required" };
+  }
 
-  const member = await getMemberByCardCode(db, input.cardCode);
+  let member = input.cardCode ? await getMemberByCardCode(db, input.cardCode) : null;
+  if (!member && input.phone) member = await getMemberByPhone(db, input.phone);
   if (!member) {
-    return { ok: false, code: "member_not_found", message: "Unknown card code" };
+    return {
+      ok: false,
+      code: "member_not_found",
+      message: input.cardCode ? "Unknown card code" : "No enrolled member for that phone",
+    };
   }
 
   if (input.eventId) {

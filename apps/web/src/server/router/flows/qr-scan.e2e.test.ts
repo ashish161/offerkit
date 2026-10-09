@@ -61,6 +61,7 @@ describe.skipIf(!E2E_ENABLED)("qr scan: card code → bill amount → points", (
     const customer = await client.customers.create({
       name: "Ashish",
       email: `${randomId("qrc")}@example.com`,
+      phone: "9096444567",
     });
     const member = await client.loyalty.members.enroll({
       programId: program.id,
@@ -110,6 +111,36 @@ describe.skipIf(!E2E_ENABLED)("qr scan: card code → bill amount → points", (
     expect(body.code).toBe("member_not_found");
   });
 
+  it("resolves a member by phone alias (formatting-insensitive)", async () => {
+    const res = await scanRequest({ phone: "+91 90964 44567", amount: 1000 });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.ok).toBe(true);
+    expect(body.basePoints).toBe(100); // ₹1,000 → 100 pts
+  });
+
+  it("unknown phone → 404 with a phone-specific message", async () => {
+    const res = await scanRequest({ phone: "9000000000", amount: 100 });
+    expect(res.status).toBe(404);
+    const body = await res.json();
+    expect(body.code).toBe("member_not_found");
+    expect(body.message).toMatch(/phone/i);
+  });
+
+  it("card code takes precedence over a phone value in the same request", async () => {
+    const res = await scanRequest({ cardCode, phone: "9000000000", amount: 100 });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.ok).toBe(true);
+  });
+
+  it("neither card code nor phone → 400 validation_error", async () => {
+    const res = await scanRequest({ amount: 100 });
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.code).toBe("validation_error");
+  });
+
   it("non-positive amount → 400 validation_error", async () => {
     const res = await scanRequest({ cardCode, amount: 0 });
     expect(res.status).toBe(400);
@@ -133,7 +164,7 @@ describe.skipIf(!E2E_ENABLED)("qr scan: card code → bill amount → points", (
       .limit(1);
     expect(mine).toBeDefined();
     expect(mine?.cardCode).toBe(cardCode);
-    // 250 + 10 + 50 (credited scans); idempotent retry added 0
-    expect(mine?.balance).toBe(310);
+    // 250 + 10 + 50 + 100 (phone) + 10 (card precedence) = 420
+    expect(mine?.balance).toBe(420);
   });
 });

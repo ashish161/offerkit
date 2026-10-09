@@ -135,15 +135,16 @@ points are credited using the program's earning rule.
 2. Admin enrolls a customer → member gets an 8-char card code
    (uppercase, confusables excluded), minted lazily.
 3. Customer opens **`/card/[code]`** → balance, tier, tier progress, history.
-4. Merchant opens **`/scan`** → enters card code + bill amount → `POST /api/scan`
-   → points credited (tier multiplier applies) → new balance shown.
+4. Merchant opens **`/scan`** → enters card code **or customer phone** + bill
+   amount → `POST /api/scan` → points credited (tier multiplier applies) →
+   new balance shown.
 
 ### Layering (keep it this way)
 
 | layer | what lives there |
 |---|---|
 | `packages/db` | `loyalty_member.card_code` (unique, nullable) — migration `0024_handy_piledriver.sql` |
-| `packages/core/src/loyalty/qr.ts` | ALL logic: `computeEarnPoints`, `resolveScanEarningRule`, `ensureCardCode`, `getMemberByCardCode`, `scanEarn`, `getCardDetails` — UI-agnostic |
+| `packages/core/src/loyalty/qr.ts` | ALL logic: `computeEarnPoints`, `resolveScanEarningRule`, `ensureCardCode`, `getMemberByCardCode`, `getMemberByPhone`, `normalizePhone`, `scanEarn`, `getCardDetails` — UI-agnostic |
 | `apps/web/src/server/qr-loyalty/` | thin adapters: `scan.ts` (parse/validate → call core), `authorize.ts` (**guard stub**) |
 | `apps/web/src/app/api/scan/route.ts` | `POST` → `handleScan` |
 | `apps/web/src/app/card/[code]/page.tsx` | public RSC card page |
@@ -153,9 +154,15 @@ Re-exported from `@offerkit/core/loyalty` (see end of `loyalty/index.ts`).
 
 ### Key semantics
 
-- `POST /api/scan` body: `{ cardCode, amount /* major units */, eventId? }`.
+- `POST /api/scan` body: `{ cardCode?, phone?, amount /* major units */, eventId? }`.
+  At least one of `cardCode`/`phone` is required (card code takes precedence).
   → `{ok, delta, balance, basePoints, earningRuleId, alreadyCredited, …}`;
   404 `member_not_found`, 400 `validation_error`, 422 other loyalty failures.
+- **Phone is an alias, not an identifier** (per OfferKit's `externalId` guidance:
+  never key on mutable/PII fields). `getMemberByPhone` matches the **last 10
+  digits** of `customer.phone` (formatting-insensitive: `+91 90964 44567` =
+  `090964 44567` = `9096444567`). Card `/card/[code]` URLs always use the opaque
+  card code, never the phone, so balances aren't enumerable by phone.
 - Card codes are **case-insensitive** on lookup, but the API regex rejects
   whitespace/non-alphanumerics before normalization.
 - `eventId` makes scans idempotent (retries don't double-credit).
@@ -164,7 +171,7 @@ Re-exported from `@offerkit/core/loyalty` (see end of `loyalty/index.ts`).
 - `loyaltyMemberOutput` now includes optional `cardCode`; `members.get`
   mints one on demand (lazy `ensureCardCode`).
 - Unit tests: `packages/core/src/loyalty/qr.test.ts`.
-  E2E: `apps/web/src/server/router/flows/qr-scan.e2e.test.ts` (7 cases).
+  E2E: `apps/web/src/server/router/flows/qr-scan.e2e.test.ts` (11 cases).
 
 ### POC limitations (deliberate, next steps)
 
