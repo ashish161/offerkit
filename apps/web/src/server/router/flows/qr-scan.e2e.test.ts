@@ -40,6 +40,7 @@ function scanRequest(body: unknown): Promise<Response> {
 describe.skipIf(!E2E_ENABLED)("qr scan: card code → bill amount → points", () => {
   let cardCode: string;
   let memberId: string;
+  let programId: string;
   let seq = 0;
   const nextBill = () => `${prefix}-b${++seq}`;
 
@@ -53,6 +54,7 @@ describe.skipIf(!E2E_ENABLED)("qr scan: card code → bill amount → points", (
       currency: "INR",
     });
     const program = await client.loyalty.programs.create({ campaignId: campaign.id });
+    programId = program.id;
     // ₹10 bill → 1 point (amountMinor / 1000)
     await client.loyalty.earningRules.create({
       programId: program.id,
@@ -137,6 +139,58 @@ describe.skipIf(!E2E_ENABLED)("qr scan: card code → bill amount → points", (
     const body = await res.json();
     expect(body.code).toBe("member_not_found");
     expect(body.message).toMatch(/phone/i);
+  });
+
+  it("quick-enrolls a new customer from a bare phone and credits points", async () => {
+    const res = await scanRequest({
+      phone: "9888000001",
+      name: "Priya",
+      amount: 1000,
+      billNumber: nextBill(),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.ok).toBe(true);
+    expect(body.enrolled).toBe(true);
+    expect(body.memberId).toBeDefined();
+    expect(body.cardCode).toMatch(/^[A-Z0-9]{8}$/);
+    expect(body.basePoints).toBe(100); // ₹1,000 → 100 pts at ₹10/pt
+  });
+
+  it("resolves the quick-enrolled member on their next scan (no duplicate customer)", async () => {
+    const res = await scanRequest({ phone: "9888000001", amount: 100, billNumber: nextBill() });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.ok).toBe(true);
+    expect(body.enrolled).toBeUndefined(); // existing member, not enrolled again
+  });
+
+  it("supports explicit programId for quick-enroll", async () => {
+    const res = await scanRequest({
+      phone: "9888000002",
+      name: "Ravi",
+      programId,
+      amount: 100,
+      billNumber: nextBill(),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.ok).toBe(true);
+    expect(body.enrolled).toBe(true);
+  });
+
+  it("quick-enroll with unknown programId → failed gracefully", async () => {
+    const res = await scanRequest({
+      phone: "9888000003",
+      name: "Nobody",
+      programId: "00000000-0000-0000-0000-000000000000",
+      amount: 100,
+      billNumber: nextBill(),
+    });
+    expect(res.status).toBe(422);
+    const body = await res.json();
+    expect(body.ok).toBe(false);
+    expect(body.code).toBe("program_not_found");
   });
 
   it("card code takes precedence over a phone value in the same request", async () => {

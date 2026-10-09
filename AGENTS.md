@@ -133,7 +133,10 @@ points are credited using the program's earning rule.
    dashboard (e.g. `kind: "per_cents", divisor: 1000` = ₹10 bill → 1 pt,
    amount is in **minor units**: paise).
 2. Admin enrolls a customer → member gets an 8-char card code
-   (uppercase, confusables excluded), minted lazily.
+   (uppercase, confusables excluded), minted lazily. **Or** the merchant
+   quick-enrolls at the terminal: an unknown phone + customer name →
+   `POST /api/scan` creates customer + member + mints the code in one shot
+   (`quickEnroll` in core; default program = newest `LOYALTY_PROGRAM`).
 3. Customer opens **`/card/[code]`** → balance, tier, tier progress, history.
 4. Merchant opens **`/scan`** → enters card code **or customer phone** + bill
    amount + unique **bill number** → `POST /api/scan` → points credited (tier
@@ -144,7 +147,7 @@ points are credited using the program's earning rule.
 | layer | what lives there |
 |---|---|
 | `packages/db` | `loyalty_member.card_code` (unique, nullable) — migration `0024_handy_piledriver.sql` |
-| `packages/core/src/loyalty/qr.ts` | ALL logic: `computeEarnPoints`, `resolveScanEarningRule`, `ensureCardCode`, `getMemberByCardCode`, `getMemberByPhone`, `normalizePhone`, `scanEarn`, `getCardDetails` — UI-agnostic |
+| `packages/core/src/loyalty/qr.ts` | ALL logic: `computeEarnPoints`, `resolveScanEarningRule`, `ensureCardCode`, `getMemberByCardCode`, `getMemberByPhone`, `normalizePhone`, `quickEnroll`, `resolveDefaultQrProgram`, `scanEarn`, `getCardDetails` — UI-agnostic |
 | `apps/web/src/server/qr-loyalty/` | thin adapters: `scan.ts` (parse/validate → call core), `authorize.ts` (**guard stub**) |
 | `apps/web/src/app/api/scan/route.ts` | `POST` → `handleScan` |
 | `apps/web/src/app/card/[code]/page.tsx` | public RSC card page |
@@ -171,6 +174,13 @@ Re-exported from `@offerkit/core/loyalty` (see end of `loyalty/index.ts`).
   `090964 44567` = `9096444567`). Card `/card/[code]` URLs always use the opaque
   card code, never the phone, so balances aren't enumerable by phone.
   (Deviation from the strict spec: phone is a *terminal convenience*, not the QR).
+- **Quick-enroll** (`/scan` with `name` + unknown `phone`): `quickEnroll` finds
+  the existing customer by phone (or creates one with the merchant-supplied
+  name — never a bare number), enrolls in the program (`programId`, defaulting
+  to `resolveDefaultQrProgram` = newest `LOYALTY_PROGRAM`), mints the card
+  code, then credits. Response includes `cardCode` + `enrolled: true`. The
+  membership transaction commits before the code is minted (a write inside the
+  open transaction deadlocks single-connection/test DBs).
 - Card codes are **case-insensitive** on lookup, but the API regex rejects
   whitespace/non-alphanumerics before normalization.
 - Earning rule selection: active rule with `event: "qr.scan"` → any active
@@ -178,7 +188,7 @@ Re-exported from `@offerkit/core/loyalty` (see end of `loyalty/index.ts`).
 - `loyaltyMemberOutput` now includes optional `cardCode`; `members.get`
   mints one on demand (lazy `ensureCardCode`).
 - Unit tests: `packages/core/src/loyalty/qr.test.ts`.
-  E2E: `apps/web/src/server/router/flows/qr-scan.e2e.test.ts` (13 cases).
+  E2E: `apps/web/src/server/router/flows/qr-scan.e2e.test.ts` (16 cases).
 
 ### POC limitations (deliberate, next steps)
 
@@ -192,6 +202,8 @@ Re-exported from `@offerkit/core/loyalty` (see end of `loyalty/index.ts`).
   the **`billNumber`** body field instead (`eventId = qr:{billNumber}`).
 - No webhook/event emitted on `scanEarn` (core `earn` doesn't `emitEvent`).
 - Card code is a bearer secret — anyone with it can see the balance.
+- `quickEnroll` locks nothing: two concurrent swipes for the same unknown phone
+  can race and create two customers (no unique index on phone, by design).
 - Single-currency assumption: amount entered in major units, ×100 to minor.
 
 ---

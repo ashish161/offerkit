@@ -1,4 +1,4 @@
-import { and, eq, sql } from "drizzle-orm";
+import { and, desc, eq, sql } from "drizzle-orm";
 import { schema, type Db } from "@offerkit/db";
 import type { LoyaltyEarnFormula } from "@offerkit/db/schema";
 import { generateCode } from "../codes/generate.ts";
@@ -185,6 +185,11 @@ export interface ScanEarnInput {
   amountMinor: number;
   /** Unique bill/invoice number from the POS — the idempotency key. */
   billNumber: string;
+  /**
+   * Quick-enroll: when `phone` matches no member, create a customer + member
+   * on the spot and credit points to it. Requires `name` and a `programId`.
+   */
+  quickEnroll?: { name: string; programId: string };
   note?: string;
 }
 
@@ -194,11 +199,175 @@ export interface ScanEarnOutcome extends EarnOutcome {
   earningRuleId: string | null;
   alreadyCredited: boolean;
   billNumber: string;
+  /** Minted card code when the member was quick-enrolled from a bare phone. */
+  cardCode?: string;
+  /** True when this scan created the customer + member on the spot. */
+  enrolled?: boolean;
 }
 
 /** Prefix isolates QR bill event ids from other ledger event ids. */
 export function billEventId(billNumber: string): string {
   return `qr:${billNumber}`;
+}
+
+export interface QuickEnrollInput {
+  name: string;
+  phone: string;
+  programId: string;
+}
+
+export interface QuickEnrollOutcome extends CardLookup {
+  cardCode: string;
+  /** False when an existing customer+program membership was reused. */
+  created: boolean;
+}
+
+/**
+ * Quick-enroll a customer from a bare phone on the spot:
+ * create the customer (if that phone is unknown), enroll them as a member of
+ * `programId`, and mint their card code. Idempotent: if the phone already maps
+ * to a member of this program, returns that member with `created: false`.
+ *
+ * Phone is still an alias, not an identifier — identity remains the customer
+ * uuid + card code. The `name` must come from the merchant (the terminal asks
+ * for it), so we never fabricate a customer from a bare number.
+ */
+export async function quickEnroll(
+  db: Db,
+  input: QuickEnrollInput,
+): Promise<LoyaltyResult<QuickEnrollOutcome>> {
+  if (input.programId) input.programId = input.programId.trim();
+  if (!input.programId) {
+    return { ok: false, code: "validation_error", message: "Program is required" };
+  }
+  const name = input.name?.trim();
+  if (!name) {
+    return { ok: false, code: "validation_error", message: "Customer name is required" };
+  }
+  const phone = normalizePhone(input.phone);
+  if (!phone) {
+    return { ok: false, code: "validation_error", message: "Phone must have at least 10 digits" };
+  }
+
+  const [program] = await db
+    .select({ id: schema.loyaltyProgram.id })
+    .from(schema.loyaltyProgram)
+    .where(eq(schema.loyaltyProgram.id, input.programId))
+    .limit(1);
+  if (!program) {
+    return { ok: false, code: "program_not_found", message: "Loyalty program not found" };
+  }
+
+  // Find-or-create the customer + membership in a transaction. `ensureCardCode`
+  // runs AFTER commit (a write inside the open transaction would deadlock a
+  // single-connection test DB / PGlite).
+  const { memberId, customerId, programId: resolvedProgramId, created } = await db.transaction(
+    async (tx) => {
+      const [existingCustomer] = await tx
+        .select({ id: schema.customer.id })
+        .from(schema.customer)
+        .where(
+          sql`right(regexp_replace(coalesce(${schema.customer.phone}, ''), '\\D', '', 'g'), 10) = ${phone}`,
+        )
+        .limit(1);
+      const existingCustomerId = existingCustomer?.id ?? null;
+
+      const [existingMember] = existingCustomerId
+        ? await tx
+            .select({
+              id: schema.loyaltyMember.id,
+              customerId: schema.loyaltyMember.customerId,
+              programId: schema.loyaltyMember.programId,
+            })
+            .from(schema.loyaltyMember)
+            .where(
+              and(
+                eq(schema.loyaltyMember.customerId, existingCustomerId),
+                eq(schema.loyaltyMember.programId, input.programId),
+              ),
+            )
+            .limit(1)
+        : [];
+      if (existingMember) {
+        return {
+          memberId: existingMember.id,
+          customerId: existingMember.customerId,
+          programId: existingMember.programId,
+          created: false,
+        };
+      }
+
+      let cid = existingCustomerId;
+      if (!cid) {
+        const [insertedCustomer] = await tx
+          .insert(schema.customer)
+          .values({ name, phone: input.phone })
+          .returning({ id: schema.customer.id });
+        cid = insertedCustomer?.id ?? null;
+        if (!cid) throw new Error("customer insert failed");
+      }
+
+      const [insertedMember] = await tx
+        .insert(schema.loyaltyMember)
+        .values({ customerId: cid, programId: input.programId })
+        .returning({ id: schema.loyaltyMember.id });
+      if (!insertedMember) throw new Error("loyalty member insert failed");
+
+      return {
+        memberId: insertedMember.id,
+        customerId: cid,
+        programId: input.programId,
+        created: true,
+      };
+    },
+  );
+
+  const cardCode = await ensureCardCode(db, memberId);
+  const [memberRow] = await db
+    .select({
+      balance: schema.loyaltyMember.balance,
+      lifetimePoints: schema.loyaltyMember.lifetimePoints,
+      currentTierId: schema.loyaltyMember.currentTierId,
+    })
+    .from(schema.loyaltyMember)
+    .where(eq(schema.loyaltyMember.id, memberId))
+    .limit(1);
+  if (!memberRow) {
+    return { ok: false, code: "member_not_found", message: "Loyalty member not found" };
+  }
+
+  return {
+    ok: true,
+    memberId,
+    customerId,
+    programId: resolvedProgramId,
+    balance: memberRow.balance,
+    lifetimePoints: memberRow.lifetimePoints,
+    currentTierId: memberRow.currentTierId,
+    cardCode,
+    created,
+  };
+}
+
+/**
+ * Resolve the default loyalty program for quick-enroll: the most recently
+ * created `LOYALTY_PROGRAM` campaign. null when none exists. Status is not a
+ * filter — the admin may keep a program in draft while trialing the flow.
+ */
+export async function resolveDefaultQrProgram(db: Db): Promise<string | null> {
+  const [row] = await db
+    .select({ id: schema.loyaltyProgram.id })
+    .from(schema.loyaltyProgram)
+    .innerJoin(schema.campaign, eq(schema.campaign.id, schema.loyaltyProgram.campaignId))
+    .where(
+      and(
+        eq(schema.campaign.type, "LOYALTY_PROGRAM"),
+        sql`${schema.campaign.deletedAt} IS NULL`,
+      ),
+    )
+    .orderBy(desc(schema.campaign.createdAt))
+    .limit(1);
+  return row?.id ?? null;
 }
 
 /**
@@ -227,6 +396,26 @@ export async function scanEarn(db: Db, input: ScanEarnInput): Promise<LoyaltyRes
 
   let member = input.cardCode ? await getMemberByCardCode(db, input.cardCode) : null;
   if (!member && input.phone) member = await getMemberByPhone(db, input.phone);
+
+  let enrolled: { cardCode: string; created: boolean } | undefined;
+  if (!member && input.phone && input.quickEnroll) {
+    const enrolledResult = await quickEnroll(db, {
+      name: input.quickEnroll.name,
+      phone: input.phone,
+      programId: input.quickEnroll.programId,
+    });
+    if (!enrolledResult.ok) return enrolledResult;
+    member = {
+      memberId: enrolledResult.memberId,
+      customerId: enrolledResult.customerId,
+      programId: enrolledResult.programId,
+      balance: enrolledResult.balance,
+      lifetimePoints: enrolledResult.lifetimePoints,
+      currentTierId: enrolledResult.currentTierId,
+    };
+    enrolled = { cardCode: enrolledResult.cardCode, created: enrolledResult.created };
+  }
+
   if (!member) {
     return {
       ok: false,
@@ -250,13 +439,14 @@ export async function scanEarn(db: Db, input: ScanEarnInput): Promise<LoyaltyRes
       balance: member.balance,
       lifetimePoints: member.lifetimePoints,
       tierId: member.currentTierId,
-      memberId: member.memberId,
-      basePoints: prior.delta,
-      earningRuleId: prior.earningRuleId,
-      alreadyCredited: true,
-      billNumber,
-    };
-  }
+memberId: member.memberId,
+    basePoints: prior.delta,
+    earningRuleId: prior.earningRuleId,
+    alreadyCredited: true,
+    billNumber,
+    ...(enrolled ? { cardCode: enrolled.cardCode, enrolled: enrolled.created } : {}),
+  };
+}
 
   const rule = await resolveScanEarningRule(db, member.programId);
   // Fallback when no rule is configured: 1 point per major currency unit
@@ -302,6 +492,7 @@ export async function scanEarn(db: Db, input: ScanEarnInput): Promise<LoyaltyRes
     earningRuleId: rule?.id ?? null,
     alreadyCredited: false,
     billNumber,
+    ...(enrolled ? { cardCode: enrolled.cardCode, enrolled: enrolled.created } : {}),
   };
 }
 

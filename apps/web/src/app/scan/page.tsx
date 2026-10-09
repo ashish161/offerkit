@@ -15,6 +15,8 @@ interface ScanSuccess {
   basePoints: number;
   memberId: string;
   alreadyCredited: boolean;
+  cardCode?: string;
+  enrolled?: boolean;
 }
 
 interface ScanFailure {
@@ -28,6 +30,7 @@ type ScanResult = ScanSuccess | ScanFailure;
 export default function ScanPage() {
   const [cardCode, setCardCode] = useState("");
   const [phone, setPhone] = useState("");
+  const [name, setName] = useState("");
   const [amount, setAmount] = useState("");
   const [billNumber, setBillNumber] = useState("");
   const [busy, setBusy] = useState(false);
@@ -55,6 +58,7 @@ export default function ScanPage() {
         body: JSON.stringify({
           ...(cardCode.trim() ? { cardCode: cardCode.trim() } : {}),
           ...(phone.trim() ? { phone: phone.trim() } : {}),
+          ...(name.trim() ? { name: name.trim() } : {}),
           amount: Number(amount),
           billNumber: billNumber.trim(),
         }),
@@ -65,6 +69,7 @@ export default function ScanPage() {
         setAmount("");
         setCardCode("");
         setPhone("");
+        setName("");
         setBillNumber("");
       } else {
         setError(body.message);
@@ -120,6 +125,22 @@ export default function ScanPage() {
               />
               <p className="text-xs text-muted-foreground">
                 <T>Enter the card code or the customer&apos;s phone number.</T>
+              </p>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="name">
+                <T>Customer name (new customers only)</T>
+              </Label>
+              <Input
+                id="name"
+                name="name"
+                autoComplete="off"
+                placeholder="e.g. Rohan"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+              />
+              <p className="text-xs text-muted-foreground">
+                <T>Enroll a new customer from their phone and credit points in one step.</T>
               </p>
             </div>
             <div className="space-y-2">
@@ -193,6 +214,12 @@ export default function ScanPage() {
                 {result.balance.toLocaleString()}
               </span>
             </div>
+            {result.cardCode && (
+              <div className="text-sm text-muted-foreground">
+                {result.enrolled ? <T>New member card code</T> : <T>Card code</T>}:{" "}
+                <span className="font-mono font-medium text-foreground">{result.cardCode}</span>
+              </div>
+            )}
           </CardContent>
         </Card>
       )}

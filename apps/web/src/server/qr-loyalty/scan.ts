@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { scanEarn } from "@offerkit/core/loyalty";
+import { scanEarn, resolveDefaultQrProgram } from "@offerkit/core/loyalty";
 import { db } from "@/lib/db";
 import { authorizeScan } from "./authorize";
 
@@ -23,6 +23,10 @@ const scanInput = z
     amount: z.coerce.number().positive().max(1_000_000_000),
     /** Unique bill/invoice number from the POS — the idempotency key. */
     billNumber: z.string().trim().min(1).max(128),
+    /** Quick-enroll: customer name used when `phone` is not a member yet. */
+    name: z.string().trim().min(1).max(200).optional(),
+    /** Quick-enroll: loyalty program to enroll into (defaults to the newest active one). */
+    programId: z.string().trim().uuid().optional(),
   })
   .refine((v) => Boolean(v.cardCode) || Boolean(v.phone), {
     message: "cardCode or phone is required",
@@ -60,11 +64,26 @@ export async function handleScan(request: Request): Promise<Response> {
 
   // Major units → minor units (paise), matching LoyaltyEarnFormula semantics.
   const amountMinor = Math.round(parsed.data.amount * 100);
+
+  // A `name` alongside a phone opts into quick-enroll when the phone is new.
+  let quickEnroll: { name: string; programId: string } | undefined;
+  if (parsed.data.name && parsed.data.phone) {
+    const programId = parsed.data.programId ?? (await resolveDefaultQrProgram(db()));
+    if (!programId) {
+      return json(
+        { ok: false, code: "validation_error", message: "No loyalty program configured for enroll" },
+        400,
+      );
+    }
+    quickEnroll = { name: parsed.data.name, programId };
+  }
+
   const result = await scanEarn(db(), {
     cardCode: parsed.data.cardCode,
     phone: parsed.data.phone,
     amountMinor,
     billNumber: parsed.data.billNumber,
+    quickEnroll,
   });
 
   if (!result.ok) {
