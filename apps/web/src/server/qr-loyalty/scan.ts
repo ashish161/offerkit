@@ -21,7 +21,8 @@ const scanInput = z
       .optional(),
     /** Bill amount as a decimal string or number in major units (e.g. 2500 = ₹2,500). */
     amount: z.coerce.number().positive().max(1_000_000_000),
-    eventId: z.string().trim().min(8).max(128).optional(),
+    /** Unique bill/invoice number from the POS — the idempotency key. */
+    billNumber: z.string().trim().min(1).max(128),
   })
   .refine((v) => Boolean(v.cardCode) || Boolean(v.phone), {
     message: "cardCode or phone is required",
@@ -63,13 +64,17 @@ export async function handleScan(request: Request): Promise<Response> {
     cardCode: parsed.data.cardCode,
     phone: parsed.data.phone,
     amountMinor,
-    eventId: parsed.data.eventId,
-    note: `QR scan · bill ${String(parsed.data.amount)}`,
+    billNumber: parsed.data.billNumber,
   });
 
   if (!result.ok) {
     const status = result.code === "member_not_found" ? 404 : 422;
     return json(result, status);
+  }
+  // A replay of an already-processed bill is not a new credit — surface it as a
+  // conflict so the merchant doesn't believe points were awarded again.
+  if (result.alreadyCredited) {
+    return json(result, 409);
   }
   return json(result);
 }

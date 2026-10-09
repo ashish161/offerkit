@@ -40,6 +40,8 @@ function scanRequest(body: unknown): Promise<Response> {
 describe.skipIf(!E2E_ENABLED)("qr scan: card code → bill amount → points", () => {
   let cardCode: string;
   let memberId: string;
+  let seq = 0;
+  const nextBill = () => `${prefix}-b${++seq}`;
 
   beforeAll(async () => {
     if (!token || !db) throw new Error("setup failed");
@@ -72,7 +74,7 @@ describe.skipIf(!E2E_ENABLED)("qr scan: card code → bill amount → points", (
   }, 30_000);
 
   it("credits points from a bill amount using the program earning rule", async () => {
-    const res = await scanRequest({ cardCode, amount: 2500 });
+    const res = await scanRequest({ cardCode, amount: 2500, billNumber: nextBill() });
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.ok).toBe(true);
@@ -83,28 +85,38 @@ describe.skipIf(!E2E_ENABLED)("qr scan: card code → bill amount → points", (
   });
 
   it("lowercases/whitespace card codes are accepted", async () => {
-    const res = await scanRequest({ cardCode: ` ${cardCode.toLowerCase()} `, amount: 100 });
+    const res = await scanRequest({
+      cardCode: ` ${cardCode.toLowerCase()} `,
+      amount: 100,
+      billNumber: nextBill(),
+    });
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.ok).toBe(true);
     expect(body.basePoints).toBe(10); // ₹100 → 10 pts
   });
 
-  it("is idempotent for the same eventId (no double credit)", async () => {
-    const eventId = `scan-${randomId("evt")}`;
-    const first = await scanRequest({ cardCode, amount: 500, eventId });
+  it("is idempotent for the same bill number (no double credit)", async () => {
+    const billNumber = nextBill();
+    const first = await scanRequest({ cardCode, amount: 500, billNumber });
     const firstBody = await first.json();
+    expect(first.status).toBe(200);
     expect(firstBody.ok).toBe(true);
 
-    const second = await scanRequest({ cardCode, amount: 500, eventId });
+    const second = await scanRequest({ cardCode, amount: 500, billNumber });
     const secondBody = await second.json();
+    expect(second.status).toBe(409); // processed bill → conflict
     expect(secondBody.ok).toBe(true);
     expect(secondBody.alreadyCredited).toBe(true);
     expect(secondBody.balance).toBe(firstBody.balance); // unchanged
   });
 
   it("unknown card code → 404 member_not_found", async () => {
-    const res = await scanRequest({ cardCode: "ZZZZ9999", amount: 100 });
+    const res = await scanRequest({
+      cardCode: "ZZZZ9999",
+      amount: 100,
+      billNumber: nextBill(),
+    });
     expect(res.status).toBe(404);
     const body = await res.json();
     expect(body.ok).toBe(false);
@@ -112,7 +124,7 @@ describe.skipIf(!E2E_ENABLED)("qr scan: card code → bill amount → points", (
   });
 
   it("resolves a member by phone alias (formatting-insensitive)", async () => {
-    const res = await scanRequest({ phone: "+91 90964 44567", amount: 1000 });
+    const res = await scanRequest({ phone: "+91 90964 44567", amount: 1000, billNumber: nextBill() });
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.ok).toBe(true);
@@ -120,7 +132,7 @@ describe.skipIf(!E2E_ENABLED)("qr scan: card code → bill amount → points", (
   });
 
   it("unknown phone → 404 with a phone-specific message", async () => {
-    const res = await scanRequest({ phone: "9000000000", amount: 100 });
+    const res = await scanRequest({ phone: "9000000000", amount: 100, billNumber: nextBill() });
     expect(res.status).toBe(404);
     const body = await res.json();
     expect(body.code).toBe("member_not_found");
@@ -128,28 +140,40 @@ describe.skipIf(!E2E_ENABLED)("qr scan: card code → bill amount → points", (
   });
 
   it("card code takes precedence over a phone value in the same request", async () => {
-    const res = await scanRequest({ cardCode, phone: "9000000000", amount: 100 });
+    const res = await scanRequest({
+      cardCode,
+      phone: "9000000000",
+      amount: 100,
+      billNumber: nextBill(),
+    });
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.ok).toBe(true);
   });
 
   it("neither card code nor phone → 400 validation_error", async () => {
-    const res = await scanRequest({ amount: 100 });
+    const res = await scanRequest({ amount: 100, billNumber: nextBill() });
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.code).toBe("validation_error");
+  });
+
+  it("missing bill number → 400 validation_error", async () => {
+    const res = await scanRequest({ cardCode, amount: 100 });
     expect(res.status).toBe(400);
     const body = await res.json();
     expect(body.code).toBe("validation_error");
   });
 
   it("non-positive amount → 400 validation_error", async () => {
-    const res = await scanRequest({ cardCode, amount: 0 });
+    const res = await scanRequest({ cardCode, amount: 0, billNumber: nextBill() });
     expect(res.status).toBe(400);
     const body = await res.json();
     expect(body.code).toBe("validation_error");
   });
 
   it("malformed body → 400", async () => {
-    const res = await scanRequest({ cardCode: "!!!" });
+    const res = await scanRequest({ cardCode: "!!!", billNumber: nextBill() });
     expect(res.status).toBe(400);
   });
 

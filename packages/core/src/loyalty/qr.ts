@@ -183,9 +183,9 @@ export interface ScanEarnInput {
   phone?: string;
   /** Bill amount in minor currency units (paise). */
   amountMinor: number;
+  /** Unique bill/invoice number from the POS — the idempotency key. */
+  billNumber: string;
   note?: string;
-  /** Dedupe key — retries with the same eventId do not double-credit. */
-  eventId?: string;
 }
 
 export interface ScanEarnOutcome extends EarnOutcome {
@@ -193,18 +193,25 @@ export interface ScanEarnOutcome extends EarnOutcome {
   basePoints: number;
   earningRuleId: string | null;
   alreadyCredited: boolean;
+  billNumber: string;
+}
+
+/** Prefix isolates QR bill event ids from other ledger event ids. */
+export function billEventId(billNumber: string): string {
+  return `qr:${billNumber}`;
 }
 
 /**
  * Merchant scan flow: card code (or phone alias) + bill amount → credited points.
  *
  * 1. resolve member by card code, falling back to phone when given
- * 2. resolve the program's scan earning rule (or default 1 pt / major unit)
- * 3. compute points from the bill amount
- * 4. credit via earn() (tier multiplier applies)
+ * 2. reject bills that were already processed (idempotency by bill number)
+ * 3. resolve the program's scan earning rule (or default 1 pt / major unit)
+ * 4. compute points from the bill amount
+ * 5. credit via earn() (tier multiplier applies)
  *
- * `eventId` makes retries idempotent: a repeated scan with the same key
- * returns the original result without crediting twice.
+ * The bill number is the idempotency key: retrying the same bill returns the
+ * original result with `alreadyCredited: true` instead of double-crediting.
  */
 export async function scanEarn(db: Db, input: ScanEarnInput): Promise<LoyaltyResult<ScanEarnOutcome>> {
   if (!Number.isFinite(input.amountMinor) || input.amountMinor <= 0) {
@@ -212,6 +219,10 @@ export async function scanEarn(db: Db, input: ScanEarnInput): Promise<LoyaltyRes
   }
   if (!input.cardCode && !input.phone) {
     return { ok: false, code: "validation_error", message: "Card code or phone is required" };
+  }
+  const billNumber = input.billNumber?.trim();
+  if (!billNumber) {
+    return { ok: false, code: "validation_error", message: "Bill number is required" };
   }
 
   let member = input.cardCode ? await getMemberByCardCode(db, input.cardCode) : null;
@@ -224,27 +235,27 @@ export async function scanEarn(db: Db, input: ScanEarnInput): Promise<LoyaltyRes
     };
   }
 
-  if (input.eventId) {
-    const prior = await db.query.loyaltyTransaction.findFirst({
-      where: and(
-        eq(schema.loyaltyTransaction.memberId, member.memberId),
-        eq(schema.loyaltyTransaction.eventId, input.eventId),
-      ),
-    });
-    if (prior) {
-      return {
-        ok: true,
-        transactionId: prior.id,
-        delta: prior.delta,
-        balance: member.balance,
-        lifetimePoints: member.lifetimePoints,
-        tierId: member.currentTierId,
-        memberId: member.memberId,
-        basePoints: prior.delta,
-        earningRuleId: prior.earningRuleId,
-        alreadyCredited: true,
-      };
-    }
+  const eventId = billEventId(billNumber);
+  const prior = await db.query.loyaltyTransaction.findFirst({
+    where: and(
+      eq(schema.loyaltyTransaction.memberId, member.memberId),
+      eq(schema.loyaltyTransaction.eventId, eventId),
+    ),
+  });
+  if (prior) {
+    return {
+      ok: true,
+      transactionId: prior.id,
+      delta: prior.delta,
+      balance: member.balance,
+      lifetimePoints: member.lifetimePoints,
+      tierId: member.currentTierId,
+      memberId: member.memberId,
+      basePoints: prior.delta,
+      earningRuleId: prior.earningRuleId,
+      alreadyCredited: true,
+      billNumber,
+    };
   }
 
   const rule = await resolveScanEarningRule(db, member.programId);
@@ -274,8 +285,8 @@ export async function scanEarn(db: Db, input: ScanEarnInput): Promise<LoyaltyRes
     memberId: member.memberId,
     basePoints,
     earningRuleId: rule?.id,
-    eventId: input.eventId,
-    note: input.note ?? "QR scan",
+    eventId,
+    note: input.note ?? `QR scan · bill ${billNumber}`,
   });
   if (!result.ok) return result;
 
@@ -290,6 +301,7 @@ export async function scanEarn(db: Db, input: ScanEarnInput): Promise<LoyaltyRes
     basePoints,
     earningRuleId: rule?.id ?? null,
     alreadyCredited: false,
+    billNumber,
   };
 }
 

@@ -136,8 +136,8 @@ points are credited using the program's earning rule.
    (uppercase, confusables excluded), minted lazily.
 3. Customer opens **`/card/[code]`** → balance, tier, tier progress, history.
 4. Merchant opens **`/scan`** → enters card code **or customer phone** + bill
-   amount → `POST /api/scan` → points credited (tier multiplier applies) →
-   new balance shown.
+   amount + unique **bill number** → `POST /api/scan` → points credited (tier
+   multiplier applies) → new balance shown.
 
 ### Layering (keep it this way)
 
@@ -154,24 +154,31 @@ Re-exported from `@offerkit/core/loyalty` (see end of `loyalty/index.ts`).
 
 ### Key semantics
 
-- `POST /api/scan` body: `{ cardCode?, phone?, amount /* major units */, eventId? }`.
+- `POST /api/scan` body: `{ cardCode?, phone?, amount /* major units */, billNumber }`.
   At least one of `cardCode`/`phone` is required (card code takes precedence).
   → `{ok, delta, balance, basePoints, earningRuleId, alreadyCredited, …}`;
-  404 `member_not_found`, 400 `validation_error`, 422 other loyalty failures.
+  404 `member_not_found`, 400 `validation_error`, 409 `alreadyCredited` (bill replay),
+  422 other loyalty failures.
+- **`billNumber` is the idempotency key** — mirrored from the POS bill/invoice.
+  Stored as ledger `eventId = "qr:{billNumber}"` (`billEventId`); replaying a
+  processed bill returns the original result with `alreadyCredited: true` and a
+  **409 Conflict** (a retry must not look like a fresh credit). This mirrors the
+  spec: the application decides when a purchase qualifies, OfferKit doesn't
+  auto-discover sales.
 - **Phone is an alias, not an identifier** (per OfferKit's `externalId` guidance:
   never key on mutable/PII fields). `getMemberByPhone` matches the **last 10
   digits** of `customer.phone` (formatting-insensitive: `+91 90964 44567` =
   `090964 44567` = `9096444567`). Card `/card/[code]` URLs always use the opaque
   card code, never the phone, so balances aren't enumerable by phone.
+  (Deviation from the strict spec: phone is a *terminal convenience*, not the QR).
 - Card codes are **case-insensitive** on lookup, but the API regex rejects
   whitespace/non-alphanumerics before normalization.
-- `eventId` makes scans idempotent (retries don't double-credit).
 - Earning rule selection: active rule with `event: "qr.scan"` → any active
   rule → fallback `per_cents/100` (1 pt per major unit).
 - `loyaltyMemberOutput` now includes optional `cardCode`; `members.get`
   mints one on demand (lazy `ensureCardCode`).
 - Unit tests: `packages/core/src/loyalty/qr.test.ts`.
-  E2E: `apps/web/src/server/router/flows/qr-scan.e2e.test.ts` (11 cases).
+  E2E: `apps/web/src/server/router/flows/qr-scan.e2e.test.ts` (13 cases).
 
 ### POC limitations (deliberate, next steps)
 
@@ -181,7 +188,8 @@ Re-exported from `@offerkit/core/loyalty` (see end of `loyalty/index.ts`).
 - No QR image (skipped for POC) and no camera scan — manual code entry only.
   Adding a QR later: encode `https://host/card/[code]`; repo has **no QR lib**
   (would need `qrcode` or `next/og` + encoder).
-- No `Idempotency-Key` on the public scan route itself (only `eventId`).
+- No `Idempotency-Key` on the public scan route itself — idempotency rides on
+  the **`billNumber`** body field instead (`eventId = qr:{billNumber}`).
 - No webhook/event emitted on `scanEarn` (core `earn` doesn't `emitEvent`).
 - Card code is a bearer secret — anyone with it can see the balance.
 - Single-currency assumption: amount entered in major units, ×100 to minor.

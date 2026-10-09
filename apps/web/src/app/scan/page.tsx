@@ -29,6 +29,7 @@ export default function ScanPage() {
   const [cardCode, setCardCode] = useState("");
   const [phone, setPhone] = useState("");
   const [amount, setAmount] = useState("");
+  const [billNumber, setBillNumber] = useState("");
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<ScanResult | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -38,6 +39,10 @@ export default function ScanPage() {
     if (busy) return;
     if (!cardCode.trim() && !phone.trim()) {
       setError("Enter a card code or phone number");
+      return;
+    }
+    if (!billNumber.trim()) {
+      setError("Enter a bill number");
       return;
     }
     setBusy(true);
@@ -51,6 +56,7 @@ export default function ScanPage() {
           ...(cardCode.trim() ? { cardCode: cardCode.trim() } : {}),
           ...(phone.trim() ? { phone: phone.trim() } : {}),
           amount: Number(amount),
+          billNumber: billNumber.trim(),
         }),
       });
       const body = (await res.json()) as ScanResult;
@@ -59,6 +65,7 @@ export default function ScanPage() {
         setAmount("");
         setCardCode("");
         setPhone("");
+        setBillNumber("");
       } else {
         setError(body.message);
       }
@@ -77,7 +84,7 @@ export default function ScanPage() {
             <T>Add points</T>
           </CardTitle>
           <CardDescription>
-            <T>Enter the customer&apos;s card code and bill amount</T>
+            <T>Enter the customer&apos;s card code, bill amount and bill number</T>
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -131,6 +138,23 @@ export default function ScanPage() {
                 onChange={(e) => setAmount(e.target.value)}
                 required
               />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="billNumber">
+                <T>Bill number</T>
+              </Label>
+              <Input
+                id="billNumber"
+                name="billNumber"
+                autoComplete="off"
+                placeholder="e.g. INV-1042"
+                value={billNumber}
+                onChange={(e) => setBillNumber(e.target.value)}
+                required
+              />
+              <p className="text-xs text-muted-foreground">
+                <T>A unique number for this bill — prevents crediting twice.</T>
+              </p>
             </div>
             <Button type="submit" className="w-full" disabled={busy}>
               {busy ? (
