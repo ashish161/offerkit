@@ -27,6 +27,10 @@ interface ScanFailure {
 
 type ScanResult = ScanSuccess | ScanFailure;
 
+type FieldErrors = Partial<Record<"cardCode" | "phone" | "amount" | "billNumber" | "name", string>>;
+
+const PHONE_DIGITS = (v: string) => v.replace(/\D/g, "");
+
 export default function ScanPage() {
   const [cardCode, setCardCode] = useState("");
   const [phone, setPhone] = useState("");
@@ -38,22 +42,56 @@ export default function ScanPage() {
   const [enroll, setEnroll] = useState(false);
   const [result, setResult] = useState<ScanResult | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
+
+  const clearFieldError = (field: keyof FieldErrors) =>
+    setFieldErrors((prev) => (prev[field] ? { ...prev, [field]: undefined } : prev));
+
+  const validate = (): FieldErrors | null => {
+    const errs: FieldErrors = {};
+    if (!cardCode.trim() && !phone.trim()) {
+      errs.cardCode = "Enter a card code or phone number";
+    } else if (cardCode.trim() && !/^[A-Za-z0-9-]+$/.test(cardCode.trim())) {
+      errs.cardCode = "Card code can only contain letters, numbers and dashes";
+    }
+    if (phone.trim() && PHONE_DIGITS(phone).length < 10) {
+      errs.phone = "Enter a full 10-digit phone number";
+    }
+    if (!amount || Number(amount) <= 0) {
+      errs.amount = "Enter a bill amount above 0";
+    }
+    if (!billNumber.trim()) {
+      errs.billNumber = "Enter a bill number";
+    }
+    if (enroll && !name.trim()) {
+      errs.name = "Enter the customer's name";
+    }
+    return Object.keys(errs).length ? errs : null;
+  };
+
+  // Map server validation/shortfall responses to the offending field so the
+  // message shows right where the cashier needs to fix it.
+  const mapServerError = (message: string): { field: FieldErrors; general: string | null } => {
+    const lower = message.toLowerCase();
+    if (lower.includes("card code")) return { field: { cardCode: message }, general: null };
+    if (lower.includes("phone")) return { field: { phone: message }, general: null };
+    if (lower.includes("bill number")) return { field: { billNumber: message }, general: null };
+    if (lower.includes("bill amount")) return { field: { amount: message }, general: null };
+    if (lower.includes("name")) return { field: { name: message }, general: null };
+    return { field: {}, general: message };
+  };
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (busy) return;
-    if (!cardCode.trim() && !phone.trim()) {
-      setError("Enter a card code or phone number");
+    const errors = validate();
+    if (errors) {
+      setFieldErrors(errors);
+      setError(null);
+      setResult(null);
       return;
     }
-    if (!billNumber.trim()) {
-      setError("Enter a bill number");
-      return;
-    }
-    if (enroll && !name.trim()) {
-      setError("Enter the customer's name");
-      return;
-    }
+    setFieldErrors({});
     setBusy(true);
     setError(null);
     setResult(null);
@@ -72,6 +110,7 @@ export default function ScanPage() {
       });
       const body = (await res.json()) as ScanResult;
       if (body.ok) {
+        setError(null);
         setResult(body);
         setAmount("");
         setCardCode("");
@@ -84,8 +123,11 @@ export default function ScanPage() {
         // Phone isn't registered — step 2: capture the new customer's details.
         setEnroll(true);
         setError(null);
+        setFieldErrors({});
       } else {
-        setError(body.message);
+        const { field, general } = mapServerError(body.message);
+        setFieldErrors(field);
+        setError(general);
       }
     } catch {
       setError("Request failed — check your connection");
@@ -121,8 +163,17 @@ export default function ScanPage() {
                 placeholder="e.g. K7XQ2M4A"
                 className="font-mono uppercase"
                 value={cardCode}
-                onChange={(e) => setCardCode(e.target.value.toUpperCase())}
+                aria-invalid={Boolean(fieldErrors.cardCode)}
+                onChange={(e) => {
+                  setCardCode(e.target.value.toUpperCase());
+                  clearFieldError("cardCode");
+                }}
               />
+              {fieldErrors.cardCode && (
+                <p className="text-xs text-destructive" data-slot="field-error">
+                  {fieldErrors.cardCode}
+                </p>
+              )}
             </div>
             <div className="space-y-2">
               <Label htmlFor="phone">
@@ -136,11 +187,20 @@ export default function ScanPage() {
                 autoComplete="off"
                 placeholder="e.g. 9096444567"
                 value={phone}
-                onChange={(e) => setPhone(e.target.value)}
+                aria-invalid={Boolean(fieldErrors.phone)}
+                onChange={(e) => {
+                  setPhone(e.target.value);
+                  clearFieldError("phone");
+                }}
               />
               <p className="text-xs text-muted-foreground">
                 <T>Enter the card code or the customer&apos;s phone number.</T>
               </p>
+              {fieldErrors.phone && (
+                <p className="text-xs text-destructive" data-slot="field-error">
+                  {fieldErrors.phone}
+                </p>
+              )}
             </div>
             <div className="space-y-2">
               <Label htmlFor="amount">
@@ -155,9 +215,17 @@ export default function ScanPage() {
                 step="0.01"
                 placeholder="2500"
                 value={amount}
-                onChange={(e) => setAmount(e.target.value)}
-                required
+                aria-invalid={Boolean(fieldErrors.amount)}
+                onChange={(e) => {
+                  setAmount(e.target.value);
+                  clearFieldError("amount");
+                }}
               />
+              {fieldErrors.amount && (
+                <p className="text-xs text-destructive" data-slot="field-error">
+                  {fieldErrors.amount}
+                </p>
+              )}
             </div>
             <div className="space-y-2">
               <Label htmlFor="billNumber">
@@ -169,12 +237,20 @@ export default function ScanPage() {
                 autoComplete="off"
                 placeholder="e.g. INV-1042"
                 value={billNumber}
-                onChange={(e) => setBillNumber(e.target.value)}
-                required
+                aria-invalid={Boolean(fieldErrors.billNumber)}
+                onChange={(e) => {
+                  setBillNumber(e.target.value);
+                  clearFieldError("billNumber");
+                }}
               />
               <p className="text-xs text-muted-foreground">
                 <T>A unique number for this bill — prevents crediting twice.</T>
               </p>
+              {fieldErrors.billNumber && (
+                <p className="text-xs text-destructive" data-slot="field-error">
+                  {fieldErrors.billNumber}
+                </p>
+              )}
             </div>
 
             {enroll && (
@@ -199,9 +275,17 @@ export default function ScanPage() {
                     autoComplete="off"
                     placeholder="e.g. Rohan"
                     value={name}
-                    onChange={(e) => setName(e.target.value)}
-                    required
+                    aria-invalid={Boolean(fieldErrors.name)}
+                    onChange={(e) => {
+                      setName(e.target.value);
+                      clearFieldError("name");
+                    }}
                   />
+                  {fieldErrors.name && (
+                    <p className="text-xs text-destructive" data-slot="field-error">
+                      {fieldErrors.name}
+                    </p>
+                  )}
                 </div>
                 <div className="space-y-2">
                   <Label htmlFor="email">
