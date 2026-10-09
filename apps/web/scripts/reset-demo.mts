@@ -50,6 +50,8 @@ const dbUrl = new URL(process.env["DATABASE_URL"]);
  *   campaign → loyalty_program → tier/earning_rule/reward/member → transaction
  *   customer → loyalty_member → transaction   (order/redemption/voucher → SET NULL)
  *
+ * The append-only `event` audit log is cleared too (webhook deliveries cascade);
+ * without this, /events keeps showing rows for long-deleted demo entities.
  * History and admin/workspace/users are left untouched.
  *
  * Flags:
@@ -123,6 +125,7 @@ const main = async (): Promise<void> => {
   console.info(`  campaigns:       ${qrCampaignIds.length}`);
   console.info(`  members:         ${await db.$count(schema.loyaltyMember)}`);
   console.info(`  transactions:    ${await db.$count(schema.loyaltyTransaction)}`);
+  console.info(`  events (audit):  ${await db.$count(schema.event)}`);
 
   if (dryRun) {
     console.info("\ndry run — nothing deleted.");
@@ -148,6 +151,14 @@ const main = async (): Promise<void> => {
   }
   if (customerIds.length > 0) {
     await db.delete(schema.customer).where(inArray(schema.customer.id, customerIds));
+  }
+  if (qrOnly) {
+    const entityIds = [...qrCampaignIds, ...customerIds];
+    if (entityIds.length > 0) {
+      await db.delete(schema.event).where(inArray(schema.event.entityId, entityIds));
+    }
+  } else {
+    await db.delete(schema.event);
   }
 
   console.info(
