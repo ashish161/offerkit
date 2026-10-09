@@ -54,10 +54,6 @@ export default function ScanPage() {
       setError("Enter the customer's name");
       return;
     }
-    if (enroll && !email.trim()) {
-      setError("Enter the customer's email");
-      return;
-    }
     setBusy(true);
     setError(null);
     setResult(null);
@@ -209,7 +205,7 @@ export default function ScanPage() {
                 </div>
                 <div className="space-y-2">
                   <Label htmlFor="email">
-                    <T>Email</T>
+                    <T>Email (optional)</T>
                   </Label>
                   <Input
                     id="email"
@@ -219,7 +215,6 @@ export default function ScanPage() {
                     placeholder="e.g. rohan@example.com"
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
-                    required
                   />
                 </div>
               </div>

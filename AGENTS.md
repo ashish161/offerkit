@@ -177,9 +177,10 @@ Re-exported from `@offerkit/core/loyalty` (see end of `loyalty/index.ts`).
   card code, never the phone, so balances aren't enumerable by phone.
   (Deviation from the strict spec: phone is a *terminal convenience*, not the QR).
 - **Quick-enroll** (second step of `/scan`): when a phone matches no member,
-  the UI asks for the customer's **name + email** (captured metadata), then
-  `quickEnroll` finds the existing customer by phone (or creates one), enrolls
-  in the program (`programId`, defaulting to `resolveDefaultQrProgram` = newest
+  the UI asks for the customer's **name** (required) + **email** (optional;
+  only captured when the customer shares it), then `quickEnroll` finds the
+  existing customer by phone (or creates one), enrolls in the program
+  (`programId`, defaulting to `resolveDefaultQrProgram` = newest
   `LOYALTY_PROGRAM`), mints the card code, then credits. Response includes
   `cardCode` + `enrolled: true`. The membership transaction commits before the
   code is minted (a write inside the open transaction deadlocks
