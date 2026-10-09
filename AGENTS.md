@@ -34,6 +34,14 @@ pnpm -r typecheck            # or pnpm --filter <pkg> typecheck
 pnpm -r lint
 OFFERKIT_TEST_PGLITE=1 pnpm --filter '!@offerkit/site' -r test   # CI-style, in-memory PG
 OFFERKIT_TEST_PGLITE=1 pnpm --filter @offerkit/web exec vitest run <file>   # single suite
+pnpm --filter @offerkit/web reset-demo [--qr-only] [--dry-run]  # hard teardown of demo data
+```
+
+- All app deletes are **soft** (`deleted_at`) — customer/campaign/program deletes never cascade.
+  The one exception is `reset-demo` (`apps/web/scripts/reset-demo.mts`), which hard-deletes
+  `campaign` + `customer` roots so the DB FK cascades (→ programs → tiers/rules/rewards →
+  members → point transactions) finally fire. It's a CLI (`node` type-stripping, no tsx),
+  prompts before deleting unless `--yes`.
 ```
 
 - Pre-commit (lefthook) runs lint + typecheck + test on every commit — full
