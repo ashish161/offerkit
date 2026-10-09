@@ -16,6 +16,22 @@ import { earn, type LoyaltyResult, type EarnOutcome } from "./index.ts";
 export const QR_SCAN_EVENT = "qr.scan";
 
 /**
+ * Postgres unique-violation (SQLSTATE 23505) detector, driver-agnostic.
+ * Drizzle wraps query errors in `DrizzleQueryError` with the driver error on
+ * `.cause`, so walk the chain before giving up.
+ */
+function isUniqueViolation(err: unknown): boolean {
+  let current: unknown = err;
+  for (let depth = 0; depth < 5 && current; depth += 1) {
+    if (typeof current === "object" && "code" in current && current.code === "23505") {
+      return true;
+    }
+    current = (current as { cause?: unknown }).cause;
+  }
+  return false;
+}
+
+/**
  * Convert a bill amount into points using a stored earning-rule formula.
  * `amountMinor` is the bill in minor currency units (e.g. paise).
  *
@@ -432,12 +448,18 @@ export async function scanEarn(db: Db, input: ScanEarnInput): Promise<LoyaltyRes
     };
   }
 
-const eventId = billEventId(billNumber);
-  const prior = await db.query.loyaltyTransaction.findFirst({
-    where: eq(schema.loyaltyTransaction.eventId, eventId),
-  });
-  if (prior) {
-    if (prior.memberId !== member.memberId) {
+  const creditMember = member;
+  const eventId = billEventId(billNumber);
+
+  /**
+   * Build the idempotent-replay result for a bill that was already credited.
+   * `member` may be a fresh snapshot (the concurrent-race path re-reads it).
+   */
+  const buildReplay = (
+    prior: typeof schema.loyaltyTransaction.$inferSelect,
+    m: { balance: number; lifetimePoints: number; currentTierId: string | null },
+  ): LoyaltyResult<ScanEarnOutcome> => {
+    if (prior.memberId !== creditMember.memberId) {
       return {
         ok: false,
         code: "bill_already_processed",
@@ -448,17 +470,22 @@ const eventId = billEventId(billNumber);
       ok: true,
       transactionId: prior.id,
       delta: prior.delta,
-      balance: member.balance,
-      lifetimePoints: member.lifetimePoints,
-      tierId: member.currentTierId,
-      memberId: member.memberId,
+      balance: m.balance,
+      lifetimePoints: m.lifetimePoints,
+      tierId: m.currentTierId,
+      memberId: creditMember.memberId,
       basePoints: prior.delta,
       earningRuleId: prior.earningRuleId,
       alreadyCredited: true,
       billNumber,
       ...(enrolled ? { cardCode: enrolled.cardCode, enrolled: enrolled.created } : {}),
     };
-  }
+  };
+
+  const prior = await db.query.loyaltyTransaction.findFirst({
+    where: eq(schema.loyaltyTransaction.eventId, eventId),
+  });
+  if (prior) return buildReplay(prior, creditMember);
 
   const rule = await resolveScanEarningRule(db, member.programId);
   // Fallback when no rule is configured: 1 point per major currency unit
@@ -483,65 +510,101 @@ const eventId = billEventId(billNumber);
     };
   }
 
-  const creditMember = member;
   let orderId: string | null = null;
-  const result = await earn(db, {
-    memberId: creditMember.memberId,
-    basePoints,
-    earningRuleId: rule?.id,
-    eventId,
-    note: input.note ?? `QR scan · bill ${billNumber}`,
-    onEarned: async (outcome, tx) => {
-      // Mirror the scanned bill as an OfferKit order so operators can search it
-      // in the dashboard. We have no POS integration, so this scan IS the only
-      // purchase signal. Keyed by bill number (unique externalId) for
-      // idempotency; the POS stays authoritative for itemised sales.
-      const [row] = await tx
-        .select({ currency: schema.campaign.currency })
-        .from(schema.loyaltyProgram)
-        .innerJoin(schema.campaign, eq(schema.campaign.id, schema.loyaltyProgram.campaignId))
-        .where(eq(schema.loyaltyProgram.id, creditMember.programId))
-        .limit(1);
-      const [order] = await tx
-        .insert(schema.order)
-        .values({
-          externalId: billNumber,
-          customerId: creditMember.customerId,
-          amount: input.amountMinor,
-          currency: row?.currency ?? "USD",
-          status: "PAID",
-          items: [],
-          metadata: {
-            source: "qr.scan",
+  let result: LoyaltyResult<EarnOutcome>;
+  try {
+    result = await earn(db, {
+      memberId: creditMember.memberId,
+      basePoints,
+      earningRuleId: rule?.id,
+      eventId,
+      note: input.note ?? `QR scan · bill ${billNumber}`,
+      onEarned: async (outcome, tx) => {
+        // Mirror the scanned bill as an OfferKit order so operators can search it
+        // in the dashboard. We have no POS integration, so this scan IS the only
+        // purchase signal. Keyed by bill number (unique externalId) for
+        // idempotency; the POS stays authoritative for itemised sales.
+        const [row] = await tx
+          .select({ currency: schema.campaign.currency })
+          .from(schema.loyaltyProgram)
+          .innerJoin(schema.campaign, eq(schema.campaign.id, schema.loyaltyProgram.campaignId))
+          .where(eq(schema.loyaltyProgram.id, creditMember.programId))
+          .limit(1);
+        const [order] = await tx
+          .insert(schema.order)
+          .values({
+            externalId: billNumber,
+            customerId: creditMember.customerId,
+            amount: input.amountMinor,
+            currency: row?.currency ?? "USD",
+            status: "PAID",
+            items: [],
+            metadata: {
+              source: "qr.scan",
+              memberId: creditMember.memberId,
+              basePoints,
+              delta: outcome.delta,
+            },
+          })
+          .returning({ id: schema.order.id });
+        orderId = order?.id ?? null;
+
+        await emitEvent(tx, {
+          type: "loyalty.points.earned",
+          entityId: creditMember.memberId,
+          payload: {
             memberId: creditMember.memberId,
+            customerId: creditMember.customerId,
+            programId: creditMember.programId,
+            billNumber,
+            amountMinor: input.amountMinor,
             basePoints,
             delta: outcome.delta,
+            balance: outcome.balance,
+            lifetimePoints: outcome.lifetimePoints,
+            tierId: outcome.tierId,
+            earningRuleId: rule?.id ?? null,
+            orderId,
+            source: "qr.scan",
           },
+        });
+      },
+    });
+  } catch (err) {
+    // Concurrent scan of the same bill: this call lost the race and the unique
+    // index on loyalty_transaction.event_id rejected the duplicate credit. The
+    // whole transaction rolled back, so re-read and return the winner's credit
+    // as an idempotent replay instead of surfacing a 500.
+    if (!isUniqueViolation(err)) throw err;
+    const winner = await db.query.loyaltyTransaction.findFirst({
+      where: eq(schema.loyaltyTransaction.eventId, eventId),
+    });
+    if (winner) {
+      const [snap] = await db
+        .select({
+          balance: schema.loyaltyMember.balance,
+          lifetimePoints: schema.loyaltyMember.lifetimePoints,
+          currentTierId: schema.loyaltyMember.currentTierId,
         })
-        .returning({ id: schema.order.id });
-      orderId = order?.id ?? null;
-
-      await emitEvent(tx, {
-        type: "loyalty.points.earned",
-        entityId: creditMember.memberId,
-        payload: {
-          memberId: creditMember.memberId,
-          customerId: creditMember.customerId,
-          programId: creditMember.programId,
-          billNumber,
-          amountMinor: input.amountMinor,
-          basePoints,
-          delta: outcome.delta,
-          balance: outcome.balance,
-          lifetimePoints: outcome.lifetimePoints,
-          tierId: outcome.tierId,
-          earningRuleId: rule?.id ?? null,
-          orderId,
-          source: "qr.scan",
-        },
-      });
-    },
-  });
+        .from(schema.loyaltyMember)
+        .where(eq(schema.loyaltyMember.id, creditMember.memberId))
+        .limit(1);
+      return buildReplay(winner, snap ?? creditMember);
+    }
+    // No ledger row for this bill — the collision is an order with the same
+    // externalId (e.g. pushed by a real POS integration). Treat as processed.
+    const clashingOrder = await db.query.order.findFirst({
+      where: eq(schema.order.externalId, billNumber),
+    });
+    if (clashingOrder) {
+      return {
+        ok: false,
+        code: "bill_already_processed",
+        message: "Bill number was already processed",
+      };
+    }
+    throw err;
+  }
   if (!result.ok) return result;
 
   return {

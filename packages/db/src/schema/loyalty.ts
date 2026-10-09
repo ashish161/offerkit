@@ -1,3 +1,4 @@
+import { sql } from "drizzle-orm";
 import {
   index,
   integer,
@@ -6,6 +7,7 @@ import {
   text,
   timestamp,
   unique,
+  uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core";
 import { campaign } from "./campaign.ts";
@@ -178,5 +180,10 @@ export const loyaltyTransaction = pgTable(
   (t) => [
     index("loyalty_transaction_member_id_idx").on(t.memberId),
     index("loyalty_transaction_expires_at_idx").on(t.expiresAt),
+    // Idempotency guard: an eventId identifies a unique source event (e.g. a QR
+    // scan bill number), so a concurrent replay must not double-credit.
+    uniqueIndex("loyalty_transaction_event_id_unique")
+      .on(t.eventId)
+      .where(sql`${t.eventId} IS NOT NULL`),
   ],
 );

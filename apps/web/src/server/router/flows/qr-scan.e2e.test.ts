@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { desc, eq } from "drizzle-orm";
+import { and, desc, eq, sql } from "drizzle-orm";
 import { schema, type Db } from "@offerkit/db";
 import { ensureCardCode } from "@offerkit/core/loyalty";
 import { handleScan } from "@/server/qr-loyalty/scan";
@@ -154,6 +154,53 @@ describe.skipIf(!E2E_ENABLED)("qr scan: card code → bill amount → points", (
     const body = await cross.json();
     expect(body.ok).toBe(false);
     expect(body.code).toBe("bill_already_processed");
+  });
+
+  it("enforces one ledger row per bill number (DB unique eventId)", async () => {
+    if (!db) throw new Error("no db");
+    const eventId = `qr:${nextBill()}`;
+    await db
+      .insert(schema.loyaltyTransaction)
+      .values({ memberId, delta: 1, balanceAfter: 1, reason: "EARN", eventId });
+    await expect(
+      db
+        .insert(schema.loyaltyTransaction)
+        .values({ memberId, delta: 1, balanceAfter: 2, reason: "EARN", eventId }),
+    ).rejects.toMatchObject({ cause: { code: "23505" } });
+  });
+
+  it("concurrent scans of the same bill credit once (no 500, no double credit)", async () => {
+    if (!db) throw new Error("no db");
+    const billNumber = nextBill();
+    const [a, b] = await Promise.all([
+      scanRequest({ cardCode, amount: 1000, billNumber }),
+      scanRequest({ cardCode, amount: 1000, billNumber }),
+    ]);
+    // One wins, the other is told the bill is already credited — never a 500.
+    expect([a.status, b.status].sort((x, y) => x - y)).toEqual([200, 409]);
+
+    const ledger = await db
+      .select({ id: schema.loyaltyTransaction.id })
+      .from(schema.loyaltyTransaction)
+      .where(eq(schema.loyaltyTransaction.eventId, `qr:${billNumber}`));
+    expect(ledger).toHaveLength(1);
+
+    const orders = await db
+      .select({ id: schema.order.id })
+      .from(schema.order)
+      .where(eq(schema.order.externalId, billNumber));
+    expect(orders).toHaveLength(1);
+
+    const events = await db
+      .select({ id: schema.event.id })
+      .from(schema.event)
+      .where(
+        and(
+          eq(schema.event.type, "loyalty.points.earned"),
+          sql`${schema.event.payload}->>'billNumber' = ${billNumber}`,
+        ),
+      );
+    expect(events).toHaveLength(1);
   });
 
   it("unknown card code → 404 member_not_found", async () => {
@@ -315,7 +362,7 @@ describe.skipIf(!E2E_ENABLED)("qr scan: card code → bill amount → points", (
       .limit(1);
     expect(mine).toBeDefined();
     expect(mine?.cardCode).toBe(cardCode);
-    // 250 + 10 + 50 + 100 (phone) + 10 (card precedence) + 100 (event) = 520
-    expect(mine?.balance).toBe(520);
+    // 250 + 10 + 50 + 100 (phone) + 10 (card precedence) + 100 (event) + 100 (concurrent) = 620
+    expect(mine?.balance).toBe(620);
   });
 });

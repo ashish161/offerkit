@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX "loyalty_transaction_event_id_unique" ON "loyalty_transaction" USING btree ("event_id") WHERE "loyalty_transaction"."event_id" IS NOT NULL;

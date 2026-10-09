@@ -179,6 +179,11 @@ Re-exported from `@offerkit/core/loyalty` (see end of `loyalty/index.ts`).
   or `bill_already_processed` + **409** if the same bill is replayed for another
   member. This mirrors the spec: the application decides when a purchase
   qualifies, OfferKit doesn't auto-discover sales.
+  - Backed by a **partial unique index** on `loyalty_transaction.event_id`
+    (migration `0025_sharp_korath.sql`), so the read-then-write check can't
+    double-credit under concurrency. `scanEarn` catches the losing tx's
+    `23505` (`isUniqueViolation`, which walks `DrizzleQueryError.cause`) and
+    returns the winner's result as an idempotent replay instead of a 500.
 - **Phone is an alias, not an identifier** (per OfferKit's `externalId` guidance:
   never key on mutable/PII fields). `getMemberByPhone` matches the **last 10
   digits** of `customer.phone` (formatting-insensitive: `+91 90964 44567` =
