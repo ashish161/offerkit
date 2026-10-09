@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { paginationInput } from "./pagination.ts";
 
 export const auditActor = z.enum(["user", "api_key", "system"]);
 
@@ -16,9 +17,7 @@ export const auditLogOutput = z.object({
   createdAt: z.string().datetime(),
 });
 
-export const auditLogListInput = z.object({
-  limit: z.number().int().min(1).max(100).default(50),
-  cursor: z.string().optional(),
+export const auditLogListInput = paginationInput.extend({
   actor: auditActor.optional(),
   entity: z.string().optional(),
   action: z.string().optional(),

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { paginationInput } from "./pagination.ts";
 
 export const orderStatus = z.enum(["CREATED", "PAID", "CANCELED", "FULFILLED"]);
 
@@ -44,9 +45,7 @@ export const orderUpdateInput = z.object({
   }),
 });
 
-export const orderListInput = z.object({
-  limit: z.number().int().min(1).max(100).default(20),
-  cursor: z.string().optional(),
+export const orderListInput = paginationInput.extend({
   customerId: z.string().uuid().optional(),
   status: orderStatus.optional(),
   search: z.string().optional(),

@@ -127,6 +127,10 @@ contract) → `packages/core` → `packages/db`.
 - `DecimalInput`/`parseDecimalToMinorUnit` in
   `components/dashboard/voucher-form.tsx` for money inputs;
   `lib/money.ts:formatMinorCurrency` for display (minor units → locale string).
+- **List endpoints must reuse `paginationInput`** (`schemas/pagination.ts`): its
+  `limit` accepts number *or* numeric string, which is what REST query strings
+  send. Declaring `limit: z.number()` in a list schema silently breaks the
+  dashboard page (400 → empty list, error swallowed). See `schemas/order.ts`.
 
 ---
 

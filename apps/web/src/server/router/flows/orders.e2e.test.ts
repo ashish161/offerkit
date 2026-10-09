@@ -116,6 +116,10 @@ describe.skipIf(!E2E_ENABLED)("orders CRUD + lifecycle + redemption attachment",
     expect(allOrders.data.find((item) => item.id === order.id)).toBeDefined();
     const searchedOrders = await client.orders.list({ search: externalId });
     expect(searchedOrders.data.find((item) => item.id === order.id)).toBeDefined();
+    // REST callers send `limit` as a numeric string in the query string — the
+    // contract must accept it (regression: list pages render empty on 400).
+    const paged = await client.orders.list({ limit: 20 });
+    expect(paged.data.find((item) => item.id === order.id)).toBeDefined();
 
     await client.orders.delete({ params: { id: order.id } });
     await expect(client.orders.get({ params: { id: order.id } })).rejects.toThrow(
