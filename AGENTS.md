@@ -160,27 +160,30 @@ Re-exported from `@offerkit/core/loyalty` (see end of `loyalty/index.ts`).
 - `POST /api/scan` body: `{ cardCode?, phone?, amount /* major units */, billNumber }`.
   At least one of `cardCode`/`phone` is required (card code takes precedence).
   → `{ok, delta, balance, basePoints, earningRuleId, alreadyCredited, …}`;
-  404 `member_not_found`, 400 `validation_error`, 409 `alreadyCredited` (bill replay),
-  422 other loyalty failures.
+  404 `member_not_found`, 400 `validation_error`, 409 `alreadyCredited` (bill
+  replay on same member) or `bill_already_processed` (bill replay on another
+  member), 422 other loyalty failures.
 - **`billNumber` is the idempotency key** — mirrored from the POS bill/invoice.
-  Stored as ledger `eventId = "qr:{billNumber}"` (`billEventId`); replaying a
-  processed bill returns the original result with `alreadyCredited: true` and a
-  **409 Conflict** (a retry must not look like a fresh credit). This mirrors the
-  spec: the application decides when a purchase qualifies, OfferKit doesn't
-  auto-discover sales.
+  Stored as ledger `eventId = "qr:{billNumber}"` (`billEventId`); the lookup is
+  **global across members**: replaying a processed bill returns the original
+  result with `alreadyCredited: true` + **409** (same member, idempotent retry),
+  or `bill_already_processed` + **409** if the same bill is replayed for another
+  member. This mirrors the spec: the application decides when a purchase
+  qualifies, OfferKit doesn't auto-discover sales.
 - **Phone is an alias, not an identifier** (per OfferKit's `externalId` guidance:
   never key on mutable/PII fields). `getMemberByPhone` matches the **last 10
   digits** of `customer.phone` (formatting-insensitive: `+91 90964 44567` =
   `090964 44567` = `9096444567`). Card `/card/[code]` URLs always use the opaque
   card code, never the phone, so balances aren't enumerable by phone.
   (Deviation from the strict spec: phone is a *terminal convenience*, not the QR).
-- **Quick-enroll** (`/scan` with `name` + unknown `phone`): `quickEnroll` finds
-  the existing customer by phone (or creates one with the merchant-supplied
-  name — never a bare number), enrolls in the program (`programId`, defaulting
-  to `resolveDefaultQrProgram` = newest `LOYALTY_PROGRAM`), mints the card
-  code, then credits. Response includes `cardCode` + `enrolled: true`. The
-  membership transaction commits before the code is minted (a write inside the
-  open transaction deadlocks single-connection/test DBs).
+- **Quick-enroll** (second step of `/scan`): when a phone matches no member,
+  the UI asks for the customer's **name + email** (captured metadata), then
+  `quickEnroll` finds the existing customer by phone (or creates one), enrolls
+  in the program (`programId`, defaulting to `resolveDefaultQrProgram` = newest
+  `LOYALTY_PROGRAM`), mints the card code, then credits. Response includes
+  `cardCode` + `enrolled: true`. The membership transaction commits before the
+  code is minted (a write inside the open transaction deadlocks
+  single-connection/test DBs).
 - Card codes are **case-insensitive** on lookup, but the API regex rejects
   whitespace/non-alphanumerics before normalization.
 - Earning rule selection: active rule with `event: "qr.scan"` → any active

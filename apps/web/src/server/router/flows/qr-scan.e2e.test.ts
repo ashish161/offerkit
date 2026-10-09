@@ -113,6 +113,18 @@ describe.skipIf(!E2E_ENABLED)("qr scan: card code → bill amount → points", (
     expect(secondBody.balance).toBe(firstBody.balance); // unchanged
   });
 
+  it("rejects a bill number already processed for another member", async () => {
+    const billNumber = nextBill();
+    const first = await scanRequest({ phone: "9777000011", name: "Nina", amount: 200, billNumber });
+    expect(first.status).toBe(200);
+
+    const cross = await scanRequest({ cardCode, amount: 200, billNumber });
+    expect(cross.status).toBe(409);
+    const body = await cross.json();
+    expect(body.ok).toBe(false);
+    expect(body.code).toBe("bill_already_processed");
+  });
+
   it("unknown card code → 404 member_not_found", async () => {
     const res = await scanRequest({
       cardCode: "ZZZZ9999",
@@ -177,6 +189,36 @@ describe.skipIf(!E2E_ENABLED)("qr scan: card code → bill amount → points", (
     const body = await res.json();
     expect(body.ok).toBe(true);
     expect(body.enrolled).toBe(true);
+  });
+
+  it("quick-enroll persists the customer name and email", async () => {
+    if (!db) throw new Error("setup failed");
+    const res = await scanRequest({
+      phone: "9888000004",
+      name: "Meera",
+      email: "meera@example.com",
+      amount: 100,
+      billNumber: nextBill(),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.enrolled).toBe(true);
+
+    const { schema } = await import("@offerkit/db");
+    const { eq } = await import("drizzle-orm");
+    const [member] = await db
+      .select({ customerId: schema.loyaltyMember.customerId })
+      .from(schema.loyaltyMember)
+      .where(eq(schema.loyaltyMember.id, body.memberId))
+      .limit(1);
+    if (!member) throw new Error("member not found");
+    const [customer] = await db
+      .select({ name: schema.customer.name, email: schema.customer.email })
+      .from(schema.customer)
+      .where(eq(schema.customer.id, member.customerId))
+      .limit(1);
+    expect(customer?.name).toBe("Meera");
+    expect(customer?.email).toBe("meera@example.com");
   });
 
   it("quick-enroll with unknown programId → failed gracefully", async () => {

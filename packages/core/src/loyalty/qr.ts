@@ -189,7 +189,7 @@ export interface ScanEarnInput {
    * Quick-enroll: when `phone` matches no member, create a customer + member
    * on the spot and credit points to it. Requires `name` and a `programId`.
    */
-  quickEnroll?: { name: string; programId: string };
+  quickEnroll?: { name: string; programId: string; email?: string };
   note?: string;
 }
 
@@ -214,6 +214,7 @@ export interface QuickEnrollInput {
   name: string;
   phone: string;
   programId: string;
+  email?: string;
 }
 
 export interface QuickEnrollOutcome extends CardLookup {
@@ -301,7 +302,7 @@ export async function quickEnroll(
       if (!cid) {
         const [insertedCustomer] = await tx
           .insert(schema.customer)
-          .values({ name, phone: input.phone })
+          .values({ name, phone: input.phone, ...(input.email?.trim() ? { email: input.email.trim() } : {}) })
           .returning({ id: schema.customer.id });
         cid = insertedCustomer?.id ?? null;
         if (!cid) throw new Error("customer insert failed");
@@ -403,6 +404,7 @@ export async function scanEarn(db: Db, input: ScanEarnInput): Promise<LoyaltyRes
       name: input.quickEnroll.name,
       phone: input.phone,
       programId: input.quickEnroll.programId,
+      email: input.quickEnroll.email,
     });
     if (!enrolledResult.ok) return enrolledResult;
     member = {
@@ -424,14 +426,18 @@ export async function scanEarn(db: Db, input: ScanEarnInput): Promise<LoyaltyRes
     };
   }
 
-  const eventId = billEventId(billNumber);
+const eventId = billEventId(billNumber);
   const prior = await db.query.loyaltyTransaction.findFirst({
-    where: and(
-      eq(schema.loyaltyTransaction.memberId, member.memberId),
-      eq(schema.loyaltyTransaction.eventId, eventId),
-    ),
+    where: eq(schema.loyaltyTransaction.eventId, eventId),
   });
   if (prior) {
+    if (prior.memberId !== member.memberId) {
+      return {
+        ok: false,
+        code: "bill_already_processed",
+        message: "Bill number was already processed for another member",
+      };
+    }
     return {
       ok: true,
       transactionId: prior.id,
@@ -439,14 +445,14 @@ export async function scanEarn(db: Db, input: ScanEarnInput): Promise<LoyaltyRes
       balance: member.balance,
       lifetimePoints: member.lifetimePoints,
       tierId: member.currentTierId,
-memberId: member.memberId,
-    basePoints: prior.delta,
-    earningRuleId: prior.earningRuleId,
-    alreadyCredited: true,
-    billNumber,
-    ...(enrolled ? { cardCode: enrolled.cardCode, enrolled: enrolled.created } : {}),
-  };
-}
+      memberId: member.memberId,
+      basePoints: prior.delta,
+      earningRuleId: prior.earningRuleId,
+      alreadyCredited: true,
+      billNumber,
+      ...(enrolled ? { cardCode: enrolled.cardCode, enrolled: enrolled.created } : {}),
+    };
+  }
 
   const rule = await resolveScanEarningRule(db, member.programId);
   // Fallback when no rule is configured: 1 point per major currency unit

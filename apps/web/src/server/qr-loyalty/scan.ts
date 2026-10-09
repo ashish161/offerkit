@@ -25,6 +25,8 @@ const scanInput = z
     billNumber: z.string().trim().min(1).max(128),
     /** Quick-enroll: customer name used when `phone` is not a member yet. */
     name: z.string().trim().min(1).max(200).optional(),
+    /** Quick-enroll: customer email used when `phone` is not a member yet. */
+    email: z.string().trim().email().max(320).optional(),
     /** Quick-enroll: loyalty program to enroll into (defaults to the newest active one). */
     programId: z.string().trim().uuid().optional(),
   })
@@ -75,7 +77,11 @@ export async function handleScan(request: Request): Promise<Response> {
         400,
       );
     }
-    quickEnroll = { name: parsed.data.name, programId };
+    quickEnroll = {
+      name: parsed.data.name,
+      programId,
+      ...(parsed.data.email?.trim() ? { email: parsed.data.email.trim() } : {}),
+    };
   }
 
   const result = await scanEarn(db(), {
@@ -87,7 +93,12 @@ export async function handleScan(request: Request): Promise<Response> {
   });
 
   if (!result.ok) {
-    const status = result.code === "member_not_found" ? 404 : 422;
+    const status =
+      result.code === "member_not_found"
+        ? 404
+        : result.code === "bill_already_processed"
+          ? 409
+          : 422;
     return json(result, status);
   }
   // A replay of an already-processed bill is not a new credit — surface it as a

@@ -11,6 +11,7 @@ export type LoyaltyFailureCode =
   | "insufficient_points"
   | "program_not_found"
   | "transaction_not_found"
+  | "bill_already_processed"
   | "validation_error";
 
 export type LoyaltyResult<T> =

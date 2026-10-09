@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Check, Loader2, Plus } from "lucide-react";
+import { Check, Loader2, Plus, UserPlus } from "lucide-react";
 import { T } from "gt-next/client";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -31,9 +31,11 @@ export default function ScanPage() {
   const [cardCode, setCardCode] = useState("");
   const [phone, setPhone] = useState("");
   const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
   const [amount, setAmount] = useState("");
   const [billNumber, setBillNumber] = useState("");
   const [busy, setBusy] = useState(false);
+  const [enroll, setEnroll] = useState(false);
   const [result, setResult] = useState<ScanResult | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -48,6 +50,14 @@ export default function ScanPage() {
       setError("Enter a bill number");
       return;
     }
+    if (enroll && !name.trim()) {
+      setError("Enter the customer's name");
+      return;
+    }
+    if (enroll && !email.trim()) {
+      setError("Enter the customer's email");
+      return;
+    }
     setBusy(true);
     setError(null);
     setResult(null);
@@ -58,7 +68,8 @@ export default function ScanPage() {
         body: JSON.stringify({
           ...(cardCode.trim() ? { cardCode: cardCode.trim() } : {}),
           ...(phone.trim() ? { phone: phone.trim() } : {}),
-          ...(name.trim() ? { name: name.trim() } : {}),
+          ...(enroll && name.trim() ? { name: name.trim() } : {}),
+          ...(enroll && email.trim() ? { email: email.trim() } : {}),
           amount: Number(amount),
           billNumber: billNumber.trim(),
         }),
@@ -70,7 +81,13 @@ export default function ScanPage() {
         setCardCode("");
         setPhone("");
         setName("");
+        setEmail("");
         setBillNumber("");
+        setEnroll(false);
+      } else if (body.code === "member_not_found" && phone.trim() && !cardCode.trim()) {
+        // Phone isn't registered — step 2: capture the new customer's details.
+        setEnroll(true);
+        setError(null);
       } else {
         setError(body.message);
       }
@@ -81,6 +98,8 @@ export default function ScanPage() {
     }
   };
 
+  const submitting = busy;
+
   return (
     <main className="mx-auto flex min-h-screen w-full max-w-sm flex-col justify-center gap-4 p-4">
       <Card>
@@ -89,7 +108,7 @@ export default function ScanPage() {
             <T>Add points</T>
           </CardTitle>
           <CardDescription>
-            <T>Enter the customer&apos;s card code, bill amount and bill number</T>
+            <T>Enter the card code or phone, bill amount and bill number</T>
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -128,22 +147,6 @@ export default function ScanPage() {
               </p>
             </div>
             <div className="space-y-2">
-              <Label htmlFor="name">
-                <T>Customer name (new customers only)</T>
-              </Label>
-              <Input
-                id="name"
-                name="name"
-                autoComplete="off"
-                placeholder="e.g. Rohan"
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-              />
-              <p className="text-xs text-muted-foreground">
-                <T>Enroll a new customer from their phone and credit points in one step.</T>
-              </p>
-            </div>
-            <div className="space-y-2">
               <Label htmlFor="amount">
                 <T>Bill amount</T>
               </Label>
@@ -177,13 +180,60 @@ export default function ScanPage() {
                 <T>A unique number for this bill — prevents crediting twice.</T>
               </p>
             </div>
-            <Button type="submit" className="w-full" disabled={busy}>
-              {busy ? (
+
+            {enroll && (
+              <div className="space-y-3 rounded-lg border border-primary/30 bg-primary/5 p-4">
+                <div className="flex items-center gap-2 text-sm font-medium">
+                  <UserPlus className="size-4" />
+                  <T>New customer for this phone</T>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  <T>
+                    This phone number isn&apos;t registered yet. Enter the customer&apos;s details to
+                    enroll them and add points.
+                  </T>
+                </p>
+                <div className="space-y-2">
+                  <Label htmlFor="name">
+                    <T>Name</T>
+                  </Label>
+                  <Input
+                    id="name"
+                    name="name"
+                    autoComplete="off"
+                    placeholder="e.g. Rohan"
+                    value={name}
+                    onChange={(e) => setName(e.target.value)}
+                    required
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="email">
+                    <T>Email</T>
+                  </Label>
+                  <Input
+                    id="email"
+                    name="email"
+                    type="email"
+                    autoComplete="off"
+                    placeholder="e.g. rohan@example.com"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    required
+                  />
+                </div>
+              </div>
+            )}
+
+            <Button type="submit" className="w-full" disabled={submitting}>
+              {submitting ? (
                 <Loader2 className="size-4 animate-spin" />
+              ) : enroll ? (
+                <UserPlus className="size-4" />
               ) : (
                 <Plus className="size-4" />
               )}
-              <T>Add Points</T>
+              <T>{enroll ? "Enroll & Add Points" : "Add Points"}</T>
             </Button>
           </form>
         </CardContent>
