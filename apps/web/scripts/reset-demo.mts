@@ -7,6 +7,7 @@ import * as schema from "@offerkit/db/schema";
 type Db = ReturnType<typeof getDb>;
 
 const args = new Set(process.argv.slice(2));
+const force = args.has("--force");
 const dryRun = args.has("--dry-run");
 const yes = args.has("--yes");
 const qrOnly = args.has("--qr-only");
@@ -18,8 +19,28 @@ if (!process.env["DATABASE_URL"]) {
   process.exit(1);
 }
 
+const dbUrl = new URL(process.env["DATABASE_URL"]);
+
 /**
- * Reset the demo/test data for the QR loyalty POC.
+ * ⚠️  DEV-ONLY TEARDOWN — DO NOT RUN AGAINST LIVE DATA
+ *
+ * This script IRREVERSIBLY HARD-DELETES customers and campaigns from the
+ * database it is pointed at. There is no undo, and customer deletes cascade to
+ * loyalty members and the full points ledger. It exists so local demo/test
+ * data can be reset — it is NOT a substitute for the product's soft deletes.
+ *
+ * When to use:
+ *   - resetting a local dev database after QR loyalty POC experiments
+ *   - clearing demo/test tenants you control (e.g. a CI scratch database)
+ *
+ * When NOT to use:
+ *   - any database that carries real/live customer data (production, staging
+ *     with production copies, monitoring/reporting consumers).
+ *
+ * Run it only through the dev wrapper and never point DATABASE_URL at a
+ * non-local host. The script refuses to run unless the host is
+ * localhost/127.0.0.1/::1 (or the Database is a unix socket) — override with
+ * --force only when you are certain the target is throwaway test data.
  *
  * Every app-level delete is a soft delete (sets `deleted_at` only), so the
  * database FK cascades never fire through the API — that is why deleting a
@@ -35,7 +56,23 @@ if (!process.env["DATABASE_URL"]) {
  *   --qr-only   only LOYALTY_PROGRAM campaigns and their member customers
  *   --dry-run   print what would be deleted, delete nothing
  *   --yes       skip the confirmation prompt
+ *   --force     bypass the local-host guard (dangerous)
  */
+
+/** Refuse to fat-finger a live database: only local hosts are allowed. */
+function assertLocalDatabase(): void {
+  if (force) return;
+  const host = dbUrl.hostname;
+  const local = host === "" || host === "localhost" || host === "127.0.0.1" || host === "::1";
+  if (!local) {
+    console.error(
+      `reset-demo is dev-only and refuses to run against host "${host}".\n` +
+        "Point DATABASE_URL at a local database (localhost/127.0.0.1/::1/unix socket),\n" +
+        "or pass --force if you are absolutely certain the target holds no live data.",
+    );
+    process.exit(1);
+  }
+}
 async function resolveScope(
   db: Db,
   qrOnly: boolean,
@@ -74,6 +111,7 @@ async function resolveScope(
 }
 
 const main = async (): Promise<void> => {
+  assertLocalDatabase();
   const db = getDb();
   const { qrCampaignIds, customerIds } = await resolveScope(db, qrOnly);
 

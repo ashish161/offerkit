@@ -41,7 +41,8 @@ pnpm --filter @offerkit/web reset-demo [--qr-only] [--dry-run]  # hard teardown 
   The one exception is `reset-demo` (`apps/web/scripts/reset-demo.mts`), which hard-deletes
   `campaign` + `customer` roots so the DB FK cascades (→ programs → tiers/rules/rewards →
   members → point transactions) finally fire. It's a CLI (`node` type-stripping, no tsx),
-  prompts before deleting unless `--yes`.
+  prompts before deleting unless `--yes`. **Dev-only guard:** refuses to run unless
+  `DATABASE_URL` host is `localhost`/`127.0.0.1`/`::1` (or unix socket); `--force` bypasses.
 ```
 
 - Pre-commit (lefthook) runs lint + typecheck + test on every commit — full
