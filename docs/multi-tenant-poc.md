@@ -122,25 +122,30 @@ top of the shared DB instead — no engine change:
 
 - **BI read-only access** (Metabase/Superset/DuckDB) on the OfferKit Postgres,
   joining `loyalty_transaction`/`order` → `loyalty_member.program_id`, or
-  `event.payload->>'programId'`. Sample view below.
+  `event.payload->>'programId'`. Full, ready-to-run queries (per-brand KPI
+  summary, daily activity, top customers, recent scans, isolation views) live in
+  **`docs/multi-tenant-reporting.sql`**.
 - **or webhook collector:** subscribe once to `loyalty.points.earned` (payload
   already has `programId`), fan aggregates into per-brand tables.
 - Note: no row-level security in OfferKit — a read-only role **filters** by
-  `program_id` but cannot *enforce* brand isolation. Fine for reports, not for
-  giving brand clients direct DB access.
+  `program_id` but cannot *enforce* brand isolation. To give a brand client only
+  their numbers, expose a per-brand **view** and grant just that view
+  (`docs/multi-tenant-reporting.sql` §5).
 
 ```sql
--- per-brand points + orders (BI view)
+-- per-brand points + scans (minimal summary; see docs/multi-tenant-reporting.sql)
 select m.program_id as brand,
-       sum(t.delta) filter (where t.type = 'EARN')  as points_earned,
-       sum(t.delta) filter (where t.type = 'BURN')  as points_burned,
-       count(*)      filter (where o.id is not null) as bills
+       coalesce(sum(t.delta) filter (where t.reason = 'EARN'), 0) as points_earned,
+       coalesce(sum(-t.delta) filter (where t.delta < 0), 0)      as points_spent,
+       count(*)                                                    as ledger_rows
 from loyalty_transaction t
 join loyalty_member m on m.id = t.member_id
-left join "order" o on o.id = (t.metadata->>'orderId')::uuid
-where t.deleted_at is null
 group by 1;
 ```
+
+> `loyalty_transaction` has a `reason` column (EARN/REDEEM/ADJUSTMENT/EXPIRY/
+> ROLLBACK) and **no** `type` or soft-delete column; `order` has no `program_id`
+> — join through `(order.metadata->>'memberId')::uuid`.
 
 ## 9. Deliverables / acceptance criteria
 
