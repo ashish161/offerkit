@@ -254,12 +254,12 @@ env var, read at **request time**:
 | `apps/web/src/server/qr-loyalty/scan.ts` | **cards are brand-locked** (member `programId` ≠ brand ⇒ 403 `wrong_brand`); **phones are brand-scoped** — the phone's membership in *this brand's program* is credited, and a phone with no membership there is auto-enrolled into the brand's program on the fly (reusing the shared `customer` row when the phone is already known; otherwise 404 `member_not_found` so `/scan` prompts for a name). A shopper can hold memberships in several brands at once. Legacy path byte-for-byte |
 | `apps/web/src/app/api/brands/route.ts` | `GET /api/brands` → `{ brands: string[] }` (sorted; empty in legacy mode) |
 | `apps/web/src/app/scan/page.tsx` | brand `<select>` + PIN field (from `GET /api/brands`) sent as headers, PIN cached in `sessionStorage` per brand; **hidden in legacy mode** |
-| `apps/web/src/server/qr-loyalty/reports.ts` | **read-only** per-brand reports: `getBrandReport(db, programId)` (summary, 30-day daily, top customers, recent scans), `getBrandCustomers(db, programId, { search, limit })` (customer list w/ tier, balance, lifetime, bills, revenue, last activity), `getBrandCustomerReport(db, programId, memberId)` (one customer: profile, tier + next tier, KPIs, points ledger, scans). Every query scoped to one `programId`, pure reads, no engine change. Mirrors `docs/multi-tenant-reporting.sql` |
+| `apps/web/src/server/qr-loyalty/reports.ts` | **read-only** per-brand reports: `getBrandReport(db, programId)` (summary, 30-day daily, top customers, recent scans), `getBrandCustomers(db, programId, { search, limit })` (customer list w/ tier, balance, lifetime, bills, revenue, last activity), `getBrandCustomerReport(db, programId, memberId)` (one customer: profile, tier + next tier, KPIs, points ledger, scans). The ledger carries a **derived tier timeline**: `lifetimeAfter` + `tierName`/`previousTierName`/`tierChanged`, reconstructed by replaying the ledger against the *current* ladder (there is no tier-history table — see below). Every query scoped to one `programId`, pure reads, no engine change. Mirrors `docs/multi-tenant-reporting.sql` |
 | `apps/web/src/server/qr-loyalty/report-scope.ts` | `resolveReportScope(request)` — shared PIN gate for the report routes: `authorizeScan()` (same as `/api/scan`) → `{ programId }`, or legacy fallback `resolveDefaultQrProgram`; returns a ready 401/404 `Response` on failure |
 | `apps/web/src/app/api/reports/route.ts` | `GET /api/reports` — brand aggregate, guarded by `resolveReportScope` |
 | `apps/web/src/app/api/reports/customers/route.ts` | `GET /api/reports/customers?search=&limit=` — brand's customer list (same gate) |
 | `apps/web/src/app/api/reports/customer/route.ts` | `GET /api/reports/customer?memberId=` — one customer's detail (same gate); non-UUID → 400, member of another brand → 404 `member_not_found` |
-| `apps/web/src/app/reports/page.tsx` | public **read-only** brand report page: brand `<select>` + PIN (reuses `/api/brands` + `sessionStorage` PIN), KPI cards + daily/recent-scan tables, a searchable **Customers** table, and a per-customer panel (ledger + scans). No mutations |
+| `apps/web/src/app/reports/page.tsx` | public **read-only** brand report page: brand `<select>` + PIN (reuses `/api/brands` + `sessionStorage` PIN), KPI cards + daily/recent-scan tables, a searchable **Customers** table, and a per-customer panel (ledger + scans) whose ledger shows the **derived tier** per entry (highlights promotions). No mutations |
 
 `apps/web/scripts/seed-reporting-demo.mts` (`pnpm --filter @offerkit/web
 seed-reporting-demo [--per-brand=7] [--yes]`) seeds realistic per-brand activity
@@ -290,6 +290,20 @@ a member belonging to another brand returns 404 `member_not_found`. The page is
 strictly read-only (no enroll/scan/adjust) and the aggregate mirrors
 `docs/multi-tenant-reporting.sql`. In legacy mode it falls back to the newest
 loyalty program.
+
+**Tier history is derived, not stored.** `loyalty_member.current_tier_id` holds
+only the *current* tier and `loyalty_transaction` has no tier column, so there is
+no first-class record of when a customer changed tier (nor an audit entry — tier
+only ever changes inside `earn()`). The customer report reconstructs a **tier
+timeline** by replaying the member's ledger against the *current* ladder, anchored
+to the member's current `lifetimePoints` (lifetime moves only on EARN `+delta`, and
+best-effort on ROLLBACK-of-EARN; ADJUSTMENT/EXPIRY leave it flat). Caveat: it uses
+today's thresholds, so changing the ladder retroactively rewrites the timeline. QR
+scans *also* snapshot the post-earn `tierId` in the `loyalty.points.earned` event
+payload, but non-scan tier changes (e.g. a manual positive ADJUSTMENT that
+recomputes the tier) emit no event. For a durable record, emit a
+`loyalty.tier.changed` event in `earn()` or add a tier-history table (both engine
+changes, deliberately out of POC scope).
 
 **Hard rule:** this feature touches **no engine files** — nothing in
 `packages/core`, `packages/db`, `packages/contract`, or any upstream-owned

@@ -137,6 +137,16 @@ top of the shared DB instead — no engine change:
     history**. Both routes use the same PIN gate and are scoped to
     `ctx.programId`; a member belonging to another brand returns 404
     `member_not_found`, so a brand can never read another brand's customer.
+  - **Tier timeline (derived):** there is no tier-history table — only
+    `loyalty_member.current_tier_id` (current value) and a ledger with no tier
+    column. So the customer detail reconstructs a **tier timeline**: each ledger
+    entry is labelled with the tier just after it (`lifetimeAfter`,
+    `tierName`, `previousTierName`, `tierChanged`), by replaying the ledger
+    against the *current* ladder, anchored to the member's current
+    `lifetimePoints`. Promotions are highlighted in the UI. Caveat: it uses
+    today's thresholds, so editing the ladder retroactively changes the timeline;
+    and it's approximate for ROLLBACK-of-adjustment (rare). For a durable record,
+    emit a `loyalty.tier.changed` event in `earn()` (engine change, out of scope).
   - **Demo data:** `pnpm --filter @offerkit/web seed-reporting-demo [--per-brand=7]
     [--yes]` (`apps/web/scripts/seed-reporting-demo.mts`) seeds realistic,
     engine-consistent per-brand activity (tiers applied, ~26 days backdated) into
@@ -178,6 +188,7 @@ group by 1;
 - [x] `/scan` UI: brand + PIN fields; legacy mode identical to today
 - [x] `/reports` read-only brand report page + `GET /api/reports` (same PIN gate), program-scoped
 - [x] Customer-level report: `/reports` searchable customer table + `GET /api/reports/customers` and `GET /api/reports/customer?memberId=` (same PIN gate, program-scoped)
+- [x] Derived tier timeline on each ledger entry (no engine change; `tierName`/`tierChanged` reconstructed from lifetime)
 - [x] New e2e suite (7+ cases) green; existing qr-scan (21) + orders (2) + loyalty suites green
 - [ ] `pnpm -r typecheck && pnpm -r lint` clean
 - [x] `.env.example` documents `MULTI_TENANT_BRANDS`

@@ -164,6 +164,14 @@ order by m.lifetime_points desc;
 -- 6) One customer's detail for a brand: points ledger + scan history. Backs
 --    `getBrandCustomerReport` (memberId comes from the list above and must
 --    belong to the program — the API enforces this and 404s otherwise).
+--
+--    Note: there is NO tier-history table. `loyalty_member.current_tier_id` is
+--    the current tier only and `loyalty_transaction` has no tier column. To see
+--    when a customer changed tier, replay the ledger against the tier ladder
+--    (highest threshold <= running lifetime) anchored to the current
+--    `lifetime_points`; lifetime moves only on EARN (+delta). The /reports
+--    customer panel does exactly this. The `event` table also snapshots the
+--    post-earn tier for QR scans only (payload->>'tierId').
 select t.created_at, t.reason, t.delta, t.balance_after, t.note
 from loyalty_transaction t
 where t.member_id = '<MEMBER_UUID>'

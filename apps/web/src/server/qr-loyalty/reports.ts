@@ -78,6 +78,14 @@ export interface BrandCustomerLedgerRow {
   balanceAfter: number;
   note: string | null;
   createdAt: string;
+  /** Derived: lifetime points just after this entry was applied. */
+  lifetimeAfter: number;
+  /** Derived: tier just after this entry (current ladder applied to lifetimeAfter). */
+  tierName: string | null;
+  /** Derived: tier just before this entry (differs from tierName on a promotion/demotion). */
+  previousTierName: string | null;
+  /** Derived: true when this entry crossed a tier boundary. */
+  tierChanged: boolean;
 }
 
 export interface BrandCustomerScan {
@@ -383,6 +391,23 @@ export async function getBrandCustomerReport(
         order by threshold asc limit 1`,
   );
 
+  // Same ladder logic as core's pickTier: highest tier whose threshold <= lifetime.
+  const allTiers = await query<{ name: string; threshold: number }>(
+    database,
+    sql`select name, threshold from loyalty_tier
+        where program_id = ${id}
+        order by threshold asc`,
+  );
+  const tiers = allTiers.map((t) => ({ name: t.name, threshold: Number(t.threshold) }));
+  const pickTierName = (lifetime: number): string | null => {
+    let chosen: string | null = null;
+    for (const t of tiers) {
+      if (t.threshold <= lifetime) chosen = t.name;
+      else break;
+    }
+    return chosen;
+  };
+
   const statRows = await query<{
     points_earned: number;
     points_spent: number;
@@ -431,6 +456,35 @@ export async function getBrandCustomerReport(
 
   const next = nextRows[0] ?? null;
 
+  // Derived tier timeline. There is no tier-history table — `loyalty_member`
+  // only stores the current tier and `loyalty_transaction` stores no tier — so
+  // we reconstruct it by replaying the ledger against the *current* ladder,
+  // anchored to the member's current lifetime. Lifetime only moves on EARN
+  // (+delta) and on ROLLBACK of an EARN (best-effort: +delta, which is negative);
+  // ADJUSTMENT/EXPIRY leave lifetime flat. Ledger rows arrive newest-first, so we
+  // walk backwards subtracting each entry's lifetime delta.
+  let remainingLifetime = Number(profile.lifetime_points);
+  const ledger: BrandCustomerLedgerRow[] = ledgerRows.map((r) => {
+    const lifetimeAfter = remainingLifetime;
+    const lifetimeDelta = r.reason === "EARN" || r.reason === "ROLLBACK" ? Number(r.delta) : 0;
+    remainingLifetime -= lifetimeDelta;
+    const lifetimeBefore = lifetimeAfter - lifetimeDelta;
+    const tierName = pickTierName(lifetimeAfter);
+    const previousTierName = pickTierName(lifetimeBefore);
+    return {
+      id: r.id,
+      reason: r.reason,
+      delta: Number(r.delta),
+      balanceAfter: Number(r.balance_after),
+      note: r.note,
+      createdAt: new Date(r.created_at).toISOString(),
+      lifetimeAfter,
+      tierName,
+      previousTierName,
+      tierChanged: tierName !== previousTierName,
+    };
+  });
+
   return {
     memberId: profile.member_id,
     customerId: profile.customer_id,
@@ -447,14 +501,7 @@ export async function getBrandCustomerReport(
     pointsSpent: stats ? Number(stats.points_spent) : 0,
     bills: stats ? Number(stats.bills) : 0,
     revenueMinor: stats ? Number(stats.revenue_minor) : 0,
-    ledger: ledgerRows.map((r) => ({
-      id: r.id,
-      reason: r.reason,
-      delta: Number(r.delta),
-      balanceAfter: Number(r.balance_after),
-      note: r.note,
-      createdAt: new Date(r.created_at).toISOString(),
-    })),
+    ledger,
     scans: scanRows.map((r) => ({
       bill: r.bill,
       amountMinor: Number(r.amount_minor),

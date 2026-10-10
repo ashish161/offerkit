@@ -75,7 +75,18 @@ interface BrandCustomerDetail {
   pointsSpent: number;
   bills: number;
   revenueMinor: number;
-  ledger: { id: string; reason: string; delta: number; balanceAfter: number; note: string | null; createdAt: string }[];
+  ledger: {
+    id: string;
+    reason: string;
+    delta: number;
+    balanceAfter: number;
+    note: string | null;
+    createdAt: string;
+    lifetimeAfter: number;
+    tierName: string | null;
+    previousTierName: string | null;
+    tierChanged: boolean;
+  }[];
   scans: BrandReportScan[];
 }
 
@@ -546,7 +557,7 @@ export default function ReportsPage() {
 
                 <div>
                   <div className="mb-2 text-sm font-medium">
-                    <T>Points ledger</T>
+                    <T>Points ledger &amp; tier</T>
                   </div>
                   {detail.ledger.length === 0 ? (
                     <p className="text-sm text-muted-foreground">
@@ -559,6 +570,7 @@ export default function ReportsPage() {
                           <th className="py-2 font-medium"><T>When</T></th>
                           <th className="py-2 font-medium"><T>Reason</T></th>
                           <th className="py-2 font-medium"><T>Note</T></th>
+                          <th className="py-2 font-medium"><T>Tier</T></th>
                           <th className="py-2 text-right font-medium"><T>Δ</T></th>
                           <th className="py-2 text-right font-medium"><T>Balance</T></th>
                         </tr>
@@ -572,6 +584,19 @@ export default function ReportsPage() {
                             <td className="py-2 text-xs">{l.reason}</td>
                             <td className="py-2 text-xs text-muted-foreground">
                               {l.note ?? "—"}
+                            </td>
+                            <td className="py-2 text-xs">
+                              {l.tierName ? (
+                                l.tierChanged ? (
+                                  <span className="font-medium">
+                                    {l.previousTierName ?? "—"} → {l.tierName}
+                                  </span>
+                                ) : (
+                                  <span className="text-muted-foreground">{l.tierName}</span>
+                                )
+                              ) : (
+                                <span className="text-muted-foreground">—</span>
+                              )}
                             </td>
                             <td
                               className={`py-2 text-right tabular-nums ${

@@ -49,6 +49,12 @@ async function insertProgram(database: Db, programId: string): Promise<void> {
     event: "qr.scan",
     formula: { kind: "per_cents", divisor: 100 },
   });
+  // Two tiers so the derived tier timeline has a boundary to cross. Both are 1x
+  // (earnMultiplier 10000) so they don't change the credited point amounts.
+  await database.insert(schema.loyaltyTier).values([
+    { id: crypto.randomUUID(), programId, name: "Bronze", threshold: 0, earnMultiplier: 10000, sortOrder: 0 },
+    { id: crypto.randomUUID(), programId, name: "VIP", threshold: 250, earnMultiplier: 10000, sortOrder: 1 },
+  ]);
 }
 
 async function insertMember(
@@ -208,9 +214,25 @@ describe.skipIf(!E2E_ENABLED)("qr reporting: per-brand report", () => {
     expect(report?.pointsEarned).toBe(300);
     expect(report?.bills).toBe(2);
     expect(report?.revenueMinor).toBe(30_000);
+    expect(report?.tierName).toBe("VIP");
     expect(report?.ledger).toHaveLength(2);
     expect(report?.scans).toHaveLength(2);
     expect(report?.scans.every((s) => s.bill?.startsWith("BrandA:"))).toBe(true);
+  });
+
+  it("derives each entry's tier and flags the promotion (ledger newest-first)", async () => {
+    const report = await getBrandCustomerReport(requireDb(), PID_A, memberA);
+    const [newest, oldest] = report?.ledger ?? [];
+    // Newest entry: the ₹200 scan pushed lifetime 100 → 300, crossing 250.
+    expect(newest?.lifetimeAfter).toBe(300);
+    expect(newest?.tierName).toBe("VIP");
+    expect(newest?.previousTierName).toBe("Bronze");
+    expect(newest?.tierChanged).toBe(true);
+    // Oldest entry: the ₹100 scan landed at lifetime 100, still Bronze.
+    expect(oldest?.lifetimeAfter).toBe(100);
+    expect(oldest?.tierName).toBe("Bronze");
+    expect(oldest?.previousTierName).toBe("Bronze");
+    expect(oldest?.tierChanged).toBe(false);
   });
 
   it("never returns a customer that belongs to another brand", async () => {
