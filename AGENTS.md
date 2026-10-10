@@ -162,10 +162,12 @@ points are credited using the program's earning rule.
 |---|---|
 | `packages/db` | `loyalty_member.card_code` (unique, nullable) — migration `0024_handy_piledriver.sql` |
 | `packages/core/src/loyalty/qr.ts` | ALL logic: `computeEarnPoints`, `resolveScanEarningRule`, `ensureCardCode`, `getMemberByCardCode`, `getMemberByPhone`, `normalizePhone`, `quickEnroll`, `resolveDefaultQrProgram`, `scanEarn`, `getCardDetails` — UI-agnostic |
-| `apps/web/src/server/qr-loyalty/` | thin adapters: `scan.ts` (parse/validate → call core), `authorize.ts` (**guard stub**) |
-| `apps/web/src/app/api/scan/route.ts` | `POST` → `handleScan` |
-| `apps/web/src/app/card/[code]/page.tsx` | public RSC card page |
-| `apps/web/src/app/scan/page.tsx` | public client merchant form |
+| `apps/web/src/server/qr-loyalty/` | thin adapters: `scan.ts` (earn: parse/validate → call core), `redeem.ts` (redeem + rewards list), `rewards.ts` (reward read helpers), `authorize.ts` (brand+PIN guard), `brands.ts` (env parsing), `reports.ts` (per-brand read-only reports), `report-scope.ts` (report auth gate) |
+| `apps/web/src/app/api/scan/route.ts` | `POST` → `handleScan` (earn) |
+| `apps/web/src/app/api/redeem/route.ts` | `POST` → `handleRedeem` (merchant terminal redemption; guarded by brand+PIN) |
+| `apps/web/src/app/api/rewards/route.ts` | `GET` → rewards list for redemption |
+| `apps/web/src/app/card/[code]/page.tsx` | public RSC card page; read-only rewards list for the member's program |
+| `apps/web/src/app/scan/page.tsx` | public client merchant terminal (Earn + Redeem modes), brand+PIN in brand mode |
 
 Re-exported from `@offerkit/core/loyalty` (see end of `loyalty/index.ts`).
 
@@ -253,7 +255,7 @@ env var, read at **request time**:
 | `apps/web/src/server/qr-loyalty/authorize.ts` | `authorizeScan()` — legacy ⇒ `null`; else requires `X-Brand` + `X-Brand-Pin`, **constant-time** PIN compare (`timingSafeEqual`); 401 `unknown_brand` / `invalid_pin` |
 | `apps/web/src/server/qr-loyalty/scan.ts` | **cards are brand-locked** (member `programId` ≠ brand ⇒ 403 `wrong_brand`); **phones are brand-scoped** — the phone's membership in *this brand's program* is credited, and a phone with no membership there is auto-enrolled into the brand's program on the fly (reusing the shared `customer` row when the phone is already known; otherwise 404 `member_not_found` so `/scan` prompts for a name). A shopper can hold memberships in several brands at once. Legacy path byte-for-byte |
 | `apps/web/src/app/api/brands/route.ts` | `GET /api/brands` → `{ brands: string[] }` (sorted; empty in legacy mode) |
-| `apps/web/src/app/scan/page.tsx` | brand `<select>` + PIN field (from `GET /api/brands`) sent as headers, PIN cached in `sessionStorage` per brand; **hidden in legacy mode** |
+| `apps/web/src/app/scan/page.tsx` | brand `<select>` + PIN field (from `GET /api/brands`) sent as headers, PIN cached in `sessionStorage` per brand; **hidden in legacy mode**. Now has **Earn** (credit points via scan) and **Redeem** (spend points on a program reward) modes. |
 | `apps/web/src/server/qr-loyalty/reports.ts` | **read-only** per-brand reports: `getBrandReport(db, programId)` (summary, 30-day daily, top customers, recent scans), `getBrandCustomers(db, programId, { search, limit })` (customer list w/ tier, balance, lifetime, bills, revenue, last activity), `getBrandCustomerReport(db, programId, memberId)` (one customer: profile, tier + next tier, KPIs, points ledger, scans). The ledger carries a **derived tier timeline**: `lifetimeAfter` + `tierName`/`previousTierName`/`tierChanged`, reconstructed by replaying the ledger against the *current* ladder (there is no tier-history table — see below). Every query scoped to one `programId`, pure reads, no engine change. Mirrors `docs/multi-tenant-reporting.sql` |
 | `apps/web/src/server/qr-loyalty/report-scope.ts` | `resolveReportScope(request)` — shared PIN gate for the report routes: `authorizeScan()` (same as `/api/scan`) → `{ programId }`, or legacy fallback `resolveDefaultQrProgram`; returns a ready 401/404 `Response` on failure |
 | `apps/web/src/app/api/reports/route.ts` | `GET /api/reports` — brand aggregate, guarded by `resolveReportScope` |

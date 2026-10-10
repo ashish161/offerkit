@@ -193,7 +193,7 @@ export async function handleScan(request: Request): Promise<Response> {
  * `getMemberByPhone`, this ignores memberships in other programs, so a shopper
  * can hold a membership in more than one brand.
  */
-async function findBrandMemberByPhone(
+export async function findBrandMemberByPhone(
   database: Db,
   phone: string,
   programId: string,
