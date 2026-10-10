@@ -35,6 +35,7 @@ pnpm -r lint
 OFFERKIT_TEST_PGLITE=1 pnpm --filter '!@offerkit/site' -r test   # CI-style, in-memory PG
 OFFERKIT_TEST_PGLITE=1 pnpm --filter @offerkit/web exec vitest run <file>   # single suite
 pnpm --filter @offerkit/web reset-demo [--qr-only] [--dry-run]  # hard teardown of demo data
+pnpm --filter @offerkit/web seed-reporting-demo [--per-brand=7] [--yes]  # realistic per-brand data for /reports
 ```
 
 - All app deletes are **soft** (`deleted_at`) — customer/campaign/program deletes never cascade.
@@ -253,6 +254,21 @@ env var, read at **request time**:
 | `apps/web/src/server/qr-loyalty/scan.ts` | **cards are brand-locked** (member `programId` ≠ brand ⇒ 403 `wrong_brand`); **phones are brand-scoped** — the phone's membership in *this brand's program* is credited, and a phone with no membership there is auto-enrolled into the brand's program on the fly (reusing the shared `customer` row when the phone is already known; otherwise 404 `member_not_found` so `/scan` prompts for a name). A shopper can hold memberships in several brands at once. Legacy path byte-for-byte |
 | `apps/web/src/app/api/brands/route.ts` | `GET /api/brands` → `{ brands: string[] }` (sorted; empty in legacy mode) |
 | `apps/web/src/app/scan/page.tsx` | brand `<select>` + PIN field (from `GET /api/brands`) sent as headers, PIN cached in `sessionStorage` per brand; **hidden in legacy mode** |
+| `apps/web/src/server/qr-loyalty/reports.ts` | **read-only** per-brand reports: `getBrandReport(db, programId)` (summary, 30-day daily, top customers, recent scans), `getBrandCustomers(db, programId, { search, limit })` (customer list w/ tier, balance, lifetime, bills, revenue, last activity), `getBrandCustomerReport(db, programId, memberId)` (one customer: profile, tier + next tier, KPIs, points ledger, scans). Every query scoped to one `programId`, pure reads, no engine change. Mirrors `docs/multi-tenant-reporting.sql` |
+| `apps/web/src/server/qr-loyalty/report-scope.ts` | `resolveReportScope(request)` — shared PIN gate for the report routes: `authorizeScan()` (same as `/api/scan`) → `{ programId }`, or legacy fallback `resolveDefaultQrProgram`; returns a ready 401/404 `Response` on failure |
+| `apps/web/src/app/api/reports/route.ts` | `GET /api/reports` — brand aggregate, guarded by `resolveReportScope` |
+| `apps/web/src/app/api/reports/customers/route.ts` | `GET /api/reports/customers?search=&limit=` — brand's customer list (same gate) |
+| `apps/web/src/app/api/reports/customer/route.ts` | `GET /api/reports/customer?memberId=` — one customer's detail (same gate); non-UUID → 400, member of another brand → 404 `member_not_found` |
+| `apps/web/src/app/reports/page.tsx` | public **read-only** brand report page: brand `<select>` + PIN (reuses `/api/brands` + `sessionStorage` PIN), KPI cards + daily/recent-scan tables, a searchable **Customers** table, and a per-customer panel (ledger + scans). No mutations |
+
+`apps/web/scripts/seed-reporting-demo.mts` (`pnpm --filter @offerkit/web
+seed-reporting-demo [--per-brand=7] [--yes]`) seeds realistic per-brand activity
+for `/reports`: reads brands from `MULTI_TENANT_BRANDS`, **simulates the engine's
+earn logic** (tier multiplier + tier re-pick, so balances/lifetimes/tiers are
+consistent), writes complete `customer`/`loyalty_member`/`loyalty_transaction`/
+`order`/`event` rows backdated across ~26 days, and is **idempotent** (deletes
+only its own rows, marked `customer.external_id = 'demo-seed:%'`). Dev-only guard
+(refuses non-local `DATABASE_URL`).
 
 **Per-brand bill namespacing:** in brand mode the adapter prefixes the POS bill
 number with the brand (`{brand}:{bill}`) before calling `scanEarn`, because the
@@ -262,9 +278,23 @@ number at two brands would collide (the second scan returns 409
 `bill_already_processed`). So `BRAND A:TEST-123` and `BRAND B:TEST-123` are two
 independent credits. Legacy mode passes the bill number through unchanged.
 
+**Brand self-serve reporting (read-only):** a brand can view their own numbers
+without a dashboard login at **`/reports`** — it asks for the **same brand + PIN**
+as `/scan`. There are two levels: a **brand aggregate** (`GET /api/reports`:
+KPI summary, 30-day daily activity, top customers, recent scans) and a
+**customer level** (`GET /api/reports/customers` for the searchable list,
+`GET /api/reports/customer?memberId=` for one customer's profile, tier/next-tier,
+points ledger and scan history). All three are guarded by `resolveReportScope`
+(`authorizeScan()` + `ctx.programId`) so a brand only ever sees its own program —
+a member belonging to another brand returns 404 `member_not_found`. The page is
+strictly read-only (no enroll/scan/adjust) and the aggregate mirrors
+`docs/multi-tenant-reporting.sql`. In legacy mode it falls back to the newest
+loyalty program.
+
 **Hard rule:** this feature touches **no engine files** — nothing in
 `packages/core`, `packages/db`, `packages/contract`, or any upstream-owned
-router. All changes live in the POC adapter files above, the `/scan` page, and config.
+router. All changes live in the POC adapter files above, the `/scan` + `/reports`
+pages, and config.
 
 ---
 

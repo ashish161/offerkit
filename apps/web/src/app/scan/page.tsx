@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import { Check, Loader2, Plus, UserPlus } from "lucide-react";
 import { T } from "gt-next/client";
 import { Button } from "@/components/ui/button";
@@ -439,6 +440,13 @@ export default function ScanPage() {
           <CardContent className="pt-6 text-sm">{error}</CardContent>
         </Card>
       )}
+
+      <Link
+        href="/reports"
+        className="text-center text-sm text-muted-foreground hover:text-foreground"
+      >
+        <T>View brand report</T> →
+      </Link>
 
       {result?.ok && (
         <Card>

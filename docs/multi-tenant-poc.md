@@ -115,22 +115,44 @@ check on the card URL if we want to hide foreign cards — explicitly deferred.
 Brand context reads env at request time so tests set/restore
 `process.env.MULTI_TENANT_BRANDS` per case.
 
-## 8. Reporting companion (separate from the code change)
+## 8. Reporting companion
 
 Engine cannot filter admin/API lists by brand (no contract param). Report on
 top of the shared DB instead — no engine change:
 
+- **Brand self-serve page (built):** **`/reports`** — a public, **read-only**
+  page where a brand enters the **same brand + PIN** as `/scan`; it calls
+  `GET /api/reports` (guarded by `authorizeScan()`, scoped to `ctx.programId`,
+  so a brand sees only its own program) and renders KPI cards (customers,
+  members, points earned/spent/outstanding, bills, revenue) plus tables for
+  30-day daily activity and recent scans. Adapter:
+  `apps/web/src/server/qr-loyalty/reports.ts` (`getBrandReport`) — pure reads,
+  no engine change. Legacy mode falls back to `resolveDefaultQrProgram`.
+  - **Customer level (built):** the same page also has a searchable
+    **Customers** table (`GET /api/reports/customers?search=` →
+    `getBrandCustomers`) listing every member of the brand with tier, balance,
+    lifetime, bills and revenue; clicking a row opens that customer's detail
+    (`GET /api/reports/customer?memberId=` → `getBrandCustomerReport`): profile,
+    tier + next tier, points/revenue KPIs, the full **points ledger** and **scan
+    history**. Both routes use the same PIN gate and are scoped to
+    `ctx.programId`; a member belonging to another brand returns 404
+    `member_not_found`, so a brand can never read another brand's customer.
+  - **Demo data:** `pnpm --filter @offerkit/web seed-reporting-demo [--per-brand=7]
+    [--yes]` (`apps/web/scripts/seed-reporting-demo.mts`) seeds realistic,
+    engine-consistent per-brand activity (tiers applied, ~26 days backdated) into
+    all report tables; idempotent (only touches its own `demo-seed:%` rows).
 - **BI read-only access** (Metabase/Superset/DuckDB) on the OfferKit Postgres,
   joining `loyalty_transaction`/`order` → `loyalty_member.program_id`, or
   `event.payload->>'programId'`. Full, ready-to-run queries (per-brand KPI
   summary, daily activity, top customers, recent scans, isolation views) live in
-  **`docs/multi-tenant-reporting.sql`**.
+  **`docs/multi-tenant-reporting.sql`** (the `/reports` page mirrors these).
 - **or webhook collector:** subscribe once to `loyalty.points.earned` (payload
   already has `programId`), fan aggregates into per-brand tables.
 - Note: no row-level security in OfferKit — a read-only role **filters** by
   `program_id` but cannot *enforce* brand isolation. To give a brand client only
   their numbers, expose a per-brand **view** and grant just that view
-  (`docs/multi-tenant-reporting.sql` §5).
+  (`docs/multi-tenant-reporting.sql` §7), or hand them the `/reports` page
+  (which enforces program scoping server-side).
 
 ```sql
 -- per-brand points + scans (minimal summary; see docs/multi-tenant-reporting.sql)
@@ -154,7 +176,9 @@ group by 1;
 - [x] `authorizeScan` enforces per-brand PIN (constant-time), legacy passes
 - [x] `scan.ts` cards brand-locked (403 `wrong_brand`), phones brand-scoped with cross-brand auto-enroll into the brand's program
 - [x] `/scan` UI: brand + PIN fields; legacy mode identical to today
-- [ ] New e2e suite (7+ cases) green; existing qr-scan (21) + orders (2) + loyalty suites green
+- [x] `/reports` read-only brand report page + `GET /api/reports` (same PIN gate), program-scoped
+- [x] Customer-level report: `/reports` searchable customer table + `GET /api/reports/customers` and `GET /api/reports/customer?memberId=` (same PIN gate, program-scoped)
+- [x] New e2e suite (7+ cases) green; existing qr-scan (21) + orders (2) + loyalty suites green
 - [ ] `pnpm -r typecheck && pnpm -r lint` clean
 - [x] `.env.example` documents `MULTI_TENANT_BRANDS`
 - [x] AGENTS.md updated with the multi-tenant section + "no engine changes" rule

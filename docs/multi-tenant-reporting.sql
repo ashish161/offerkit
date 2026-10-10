@@ -14,6 +14,13 @@
 --   and <alias>.program_id = '<PROGRAM_UUID>'
 -- to the WHERE clause (see the isolation views at the bottom).
 --
+-- These queries back the built-in read-only brand page at /reports
+-- (`apps/web/src/server/qr-loyalty/reports.ts`), which is guarded by the same
+-- brand + PIN as /scan and scoped to one program server-side:
+--   * brand aggregate  -> getBrandReport          -> GET /api/reports
+--   * customer list    -> getBrandCustomers       -> GET /api/reports/customers
+--   * one customer     -> getBrandCustomerReport  -> GET /api/reports/customer
+--
 -- Notes on the schema:
 --   * loyalty_transaction.reason ∈ (EARN, REDEEM, ADJUSTMENT, EXPIRY, ROLLBACK)
 --     — there is NO `type` column and NO soft-delete column.
@@ -121,8 +128,57 @@ order by o.created_at desc
 limit 50;
 
 
+-- 5) Customer-level list for one brand (all members: tier, points, spend,
+--    recency). Add `and cu.name ilike '%' || :search || '%'` (or cu.phone) for
+--    the searchable table on /reports. Backs `getBrandCustomers`.
+select cu.name,
+       cu.phone,
+       t.name                                        as tier,
+       m.balance,
+       m.lifetime_points,
+       coalesce(led.points_earned, 0)                as points_earned,
+       coalesce(led.points_spent, 0)                 as points_spent,
+       coalesce(bi.bills, 0)                         as bills,
+       coalesce(bi.revenue_minor, 0)                 as revenue_minor,
+       greatest(coalesce(led.last_tx, m.enrolled_at),
+                coalesce(bi.last_order, m.enrolled_at)) as last_activity_at
+from loyalty_member m
+join customer cu on cu.id = m.customer_id
+left join loyalty_tier t on t.id = m.current_tier_id
+left join (
+  select member_id,
+         sum(delta) filter (where delta > 0)  as points_earned,
+         sum(-delta) filter (where delta < 0) as points_spent,
+         max(created_at)                      as last_tx
+  from loyalty_transaction group by member_id
+) led on led.member_id = m.id
+left join (
+  select (metadata->>'memberId')::uuid as member_id,
+         count(*) as bills, sum(amount) as revenue_minor, max(created_at) as last_order
+  from "order" where metadata->>'source' = 'qr.scan' group by 1
+) bi on bi.member_id = m.id
+where m.program_id = '<PROGRAM_UUID>' and cu.deleted_at is null
+order by m.lifetime_points desc;
+
+
+-- 6) One customer's detail for a brand: points ledger + scan history. Backs
+--    `getBrandCustomerReport` (memberId comes from the list above and must
+--    belong to the program — the API enforces this and 404s otherwise).
+select t.created_at, t.reason, t.delta, t.balance_after, t.note
+from loyalty_transaction t
+where t.member_id = '<MEMBER_UUID>'
+order by t.created_at desc
+limit 100;
+
+select o.external_id as bill, o.amount as amount_minor, o.currency, o.status, o.created_at
+from "order" o
+where o.metadata->>'memberId' = '<MEMBER_UUID>' and o.metadata->>'source' = 'qr.scan'
+order by o.created_at desc
+limit 50;
+
+
 -- ============================================================================
--- 5) Brand isolation for a BI tool / brand client
+-- 7) Brand isolation for a BI tool / brand client
 -- ----------------------------------------------------------------------------
 -- OfferKit has no row-level security, so a shared read-only role can *filter*
 -- by program_id but cannot *enforce* it. To give a brand ONLY their numbers,
