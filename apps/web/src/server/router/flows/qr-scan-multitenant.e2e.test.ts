@@ -202,17 +202,91 @@ describe.skipIf(!E2E_ENABLED)("qr scan: multi-tenant brands", () => {
     });
   });
 
-  it("brand mode: brand A phone at brand B terminal → 403 wrong_brand", async () => {
+  it("brand mode: phone can hold memberships in multiple brands (cross-brand enroll)", async () => {
     const database = requireDb();
     await withMultitenantEnv(JSON_BRANDS, async () => {
-      await insertMember(database, { programId: PID_A, phone: "9110000007" });
+      const { customerId } = await insertMember(database, {
+        programId: PID_A,
+        phone: "9110000007",
+      });
       const res = await scanRequest(
         { phone: "9110000007", amount: 100, billNumber: nextBill() },
         HEADERS_B,
       );
-      expect(res.status).toBe(403);
+      expect(res.status).toBe(200);
       const body = await res.json();
-      expect(body.code).toBe("wrong_brand");
+      expect(body.ok).toBe(true);
+      expect(body.enrolled).toBe(true);
+      expect(body.cardCode).toBeTruthy();
+
+      const memberships = await database
+        .select({ programId: schema.loyaltyMember.programId })
+        .from(schema.loyaltyMember)
+        .where(eq(schema.loyaltyMember.customerId, customerId));
+      expect(memberships.map((m) => m.programId).sort()).toEqual([PID_A, PID_B].sort());
+    });
+  });
+
+  it("brand mode: repeat phone scan at the same brand credits the existing membership", async () => {
+    const database = requireDb();
+    await withMultitenantEnv(JSON_BRANDS, async () => {
+      const { memberId } = await insertMember(database, {
+        programId: PID_A,
+        phone: "9110000011",
+      });
+      const res = await scanRequest(
+        { phone: "9110000011", amount: 100, billNumber: nextBill() },
+        HEADERS_A,
+      );
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.ok).toBe(true);
+      expect(body.memberId).toBe(memberId);
+      expect(body.enrolled).toBeFalsy();
+    });
+  });
+
+  it("brand mode: brand-new phone without a name → 404 member_not_found (prompts quick-enroll)", async () => {
+    await withMultitenantEnv(JSON_BRANDS, async () => {
+      const res = await scanRequest(
+        { phone: "9110000012", amount: 100, billNumber: nextBill() },
+        HEADERS_B,
+      );
+      expect(res.status).toBe(404);
+      const body = await res.json();
+      expect(body.ok).toBe(false);
+      expect(body.code).toBe("member_not_found");
+    });
+  });
+
+  it("brand mode: the same bill number at two brands are separate credits", async () => {
+    const database = requireDb();
+    await withMultitenantEnv(JSON_BRANDS, async () => {
+      await insertMember(database, { programId: PID_A, phone: "9110000013", cardCode: "SAMEBILL" });
+      await insertMember(database, { programId: PID_B, phone: "9110000014", cardCode: "SB2CARDS" });
+      const bill = nextBill();
+
+      const a = await scanRequest(
+        { cardCode: "SAMEBILL", amount: 100, billNumber: bill },
+        HEADERS_A,
+      );
+      expect(a.status).toBe(200);
+
+      const b = await scanRequest(
+        { cardCode: "SB2CARDS", amount: 100, billNumber: bill },
+        HEADERS_B,
+      );
+      expect(b.status).toBe(200);
+      const bBody = await b.json();
+      expect(bBody.ok).toBe(true);
+      expect(bBody.alreadyCredited).toBe(false);
+
+      // Both brands mirrored their own order for the same POS bill number.
+      const orders = await database
+        .select({ externalId: schema.order.externalId })
+        .from(schema.order)
+        .where(eq(schema.order.externalId, `${HEADERS_B["x-brand"]}:${bill}`));
+      expect(orders).toHaveLength(1);
     });
   });
 

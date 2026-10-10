@@ -55,14 +55,26 @@ New file `apps/web/src/server/qr-loyalty/brands.ts`:
 ## 4. Adapter: `scan.ts` changes
 
 1. After `authorizeScan`, have `BrandContext`.
-2. **Cross-brand redemption gate:** if brand context present and the request
-   has `cardCode`/`phone`, resolve the member first via exported core helpers
-   `getMemberByCardCode` / `getMemberByPhone`; if a member exists and
-   `member.programId !== brand.programId` → `403 { code: "wrong_brand" }`.
-3. **Quick-enroll:** replace `resolveDefaultQrProgram(db())` at scan.ts:34 with
-   `brand.programId` when brand context present. New phones for brand B can
-   never enroll into brand A's program.
-4. Legacy mode (no brand context) keeps today's exact path.
+2. **Cards are brand-locked, phones are brand-scoped.** In brand mode:
+   - `cardCode` → resolve via `getMemberByCardCode`; if a member exists and
+     `member.programId !== brand.programId` → `403 { code: "wrong_brand" }`
+     (a card is a bearer token of one brand).
+   - `phone` → resolve the member **within this brand's program**
+     (`findBrandMemberByPhone`, a brand-scoped join). If the phone has a
+     membership there, credit it. If not, quick-enroll into the brand's
+     program on the fly — reusing the shared `customer` row when the phone is
+     already known (auto-enroll with the stored name), otherwise 404
+     `member_not_found` so `/scan` prompts for a name. A shopper can hold
+     memberships in several brands at once.
+3. **Quick-enroll:** uses `brand.programId` when brand context present (body
+   `programId` ignored in brand mode). Legacy uses `resolveDefaultQrProgram`.
+4. **Per-brand bill namespacing:** prefix the bill number with the brand
+   (`{brand}:{bill}`) before calling `scanEarn` in brand mode. The engine keys
+   idempotency on `event_id = qr:{bill}` and mirrors `order.external_id = {bill}`,
+   both globally unique — without the prefix the same POS bill number at two
+   brands would collide (409 `bill_already_processed`). So `BRAND A:TEST-123` and
+   `BRAND B:TEST-123` are two separate credits; legacy passes the bill unchanged.
+5. Legacy mode (no brand context) keeps today's exact path.
 
 No change to `scanEarn` or any core function — we only gate before calling.
 
@@ -89,7 +101,12 @@ check on the card URL if we want to hide foreign cards — explicitly deferred.
 - legacy mode (env `{}`): existing scan behaviour unchanged with no headers
 - brand mode: valid brand+pin ⇒ 200 credit; wrong pin ⇒ 401; unknown brand ⇒ 401
 - wrong-brand card: card of brand A rejected at brand B terminal ⇒ 403
-- wrong-brand phone: phone enrolled in A rejected at B ⇒ 403
+- cross-brand phone: phone already a member of A, scanned at B ⇒ 200, auto-enrolls
+  into B and credits B's membership (same customer holds memberships in both)
+- same-brand phone repeat: scan at the phone's own brand credits the existing
+  membership (no re-enroll)
+- brand-new phone without a name ⇒ 404 `member_not_found` (UI prompts quick-enroll)
+- same bill number at two brands ⇒ two separate credits (event id + order external id namespaced per brand)
 - quick-enroll with brand context enrolls into the BRAND's program (assert
   member `programId` + credit lands in that program's ledger)
 - headerless request in brand mode ⇒ 401
@@ -130,7 +147,7 @@ group by 1;
 - [x] `feature/multi_tenant` branch, all changes limited to our POC files
 - [x] `brands.ts` config parsed from `MULTI_TENANT_BRANDS`, legacy when unset
 - [x] `authorizeScan` enforces per-brand PIN (constant-time), legacy passes
-- [x] `scan.ts` gates wrong-brand members and enrolls new phones into brand's program
+- [x] `scan.ts` cards brand-locked (403 `wrong_brand`), phones brand-scoped with cross-brand auto-enroll into the brand's program
 - [x] `/scan` UI: brand + PIN fields; legacy mode identical to today
 - [ ] New e2e suite (7+ cases) green; existing qr-scan (21) + orders (2) + loyalty suites green
 - [ ] `pnpm -r typecheck && pnpm -r lint` clean
@@ -187,9 +204,15 @@ export async function authorizeScan(request: Request): Promise<BrandContext | nu
 
 - `handleScan` gets `const ctx = await authorizeScan(request)`.
 - Brand mode (`ctx` non-null):
-  - member present (cardCode/phone) and `member.programId !== ctx.programId`
+  - `cardCode`: member present and `member.programId !== ctx.programId`
     ⇒ `403 { ok:false, code:"wrong_brand", message }` BEFORE calling `scanEarn`.
-  - quick-enroll uses `ctx.programId` (body `programId` is ignored in brand mode).
+  - `phone`: credit the phone's membership in `ctx.programId` only; if it has no
+    membership there, enroll it into `ctx.programId` (404 `member_not_found` if a
+    brand-new customer and no name). The response includes `cardCode` and
+    `enrolled: true` when the phone was enrolled for that brand.
+  - quick-enroll/phone lookup uses `ctx.programId` (body `programId` is ignored in brand mode).
+  - `billNumber` is prefixed with the brand (`{brand}:{bill}`) before `scanEarn`,
+    so the same POS bill number at two brands is two separate credits.
 - Legacy (`ctx` null): byte-for-byte today's path.
 
 **boundary 4 → 5 (page consumes the API contract)**

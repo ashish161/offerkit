@@ -250,9 +250,17 @@ env var, read at **request time**:
 |---|---|
 | `apps/web/src/server/qr-loyalty/brands.ts` | `parseBrands()` (per entry: uuid `programId` + non-empty `pin`; bad JSON/fields dropped → `{}`), `brandFromHeader()`, `listBrandNames()` (sorted) |
 | `apps/web/src/server/qr-loyalty/authorize.ts` | `authorizeScan()` — legacy ⇒ `null`; else requires `X-Brand` + `X-Brand-Pin`, **constant-time** PIN compare (`timingSafeEqual`); 401 `unknown_brand` / `invalid_pin` |
-| `apps/web/src/server/qr-loyalty/scan.ts` | **wrong-brand gate** (member `programId` ≠ brand ⇒ 403 `wrong_brand`) + quick-enroll into the brand's `programId`; legacy path byte-for-byte |
+| `apps/web/src/server/qr-loyalty/scan.ts` | **cards are brand-locked** (member `programId` ≠ brand ⇒ 403 `wrong_brand`); **phones are brand-scoped** — the phone's membership in *this brand's program* is credited, and a phone with no membership there is auto-enrolled into the brand's program on the fly (reusing the shared `customer` row when the phone is already known; otherwise 404 `member_not_found` so `/scan` prompts for a name). A shopper can hold memberships in several brands at once. Legacy path byte-for-byte |
 | `apps/web/src/app/api/brands/route.ts` | `GET /api/brands` → `{ brands: string[] }` (sorted; empty in legacy mode) |
 | `apps/web/src/app/scan/page.tsx` | brand `<select>` + PIN field (from `GET /api/brands`) sent as headers, PIN cached in `sessionStorage` per brand; **hidden in legacy mode** |
+
+**Per-brand bill namespacing:** in brand mode the adapter prefixes the POS bill
+number with the brand (`{brand}:{bill}`) before calling `scanEarn`, because the
+engine's idempotency key (`event_id = qr:{bill}`) and the mirrored
+`order.external_id` are **globally unique**. Without the prefix, the same bill
+number at two brands would collide (the second scan returns 409
+`bill_already_processed`). So `BRAND A:TEST-123` and `BRAND B:TEST-123` are two
+independent credits. Legacy mode passes the bill number through unchanged.
 
 **Hard rule:** this feature touches **no engine files** — nothing in
 `packages/core`, `packages/db`, `packages/contract`, or any upstream-owned
