@@ -5,6 +5,7 @@ import { T } from "gt-next";
 import { ArrowLeft, Star } from "lucide-react";
 import { getCardDetails, listHistory } from "@offerkit/core/loyalty";
 import { db } from "@/lib/db";
+import { listCardRewards } from "@/server/qr-loyalty/rewards";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
@@ -23,6 +24,7 @@ export default async function LoyaltyCardPage({ params }: PageProps) {
   if (!details) notFound();
 
   const history = await listHistory(db(), details.memberId, 25);
+  const cardRewards = await listCardRewards(db(), details.cardCode);
   const progress =
     details.nextTierThreshold && details.nextTierThreshold > 0
       ? Math.min(100, Math.round((details.lifetimePoints / details.nextTierThreshold) * 100))
@@ -93,6 +95,44 @@ export default async function LoyaltyCardPage({ params }: PageProps) {
           )}
         </CardContent>
       </Card>
+
+      {cardRewards && cardRewards.rewards.length > 0 && (
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-base">
+              <T>Rewards</T>
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <ul className="divide-y">
+              {cardRewards.rewards.map((reward) => {
+                const affordable = details.balance >= reward.cost;
+                return (
+                  <li
+                    key={reward.id}
+                    className="flex items-center justify-between gap-2 py-2 text-sm"
+                  >
+                    <div className="min-w-0">
+                      <div className="truncate">{reward.name}</div>
+                      {reward.description && (
+                        <div className="truncate text-xs text-muted-foreground">
+                          {reward.description}
+                        </div>
+                      )}
+                    </div>
+                    <Badge variant={affordable ? "default" : "secondary"} className="shrink-0">
+                      {reward.cost.toLocaleString()} <T>pts</T>
+                    </Badge>
+                  </li>
+                );
+              })}
+            </ul>
+            <p className="pt-2 text-xs text-muted-foreground">
+              <T>Redeem at the counter.</T>
+            </p>
+          </CardContent>
+        </Card>
+      )}
 
       <Card>
         <CardHeader className="pb-2">

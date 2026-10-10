@@ -77,6 +77,80 @@ describe.skipIf(!enabled)("redeem (live DB)", () => {
     await cleanup(db, v.id);
   });
 
+  it("uses non-USD currency for orderless previews, legacy replays, and rollbacks", async () => {
+    if (!db) throw new Error("db not initialized");
+    const previousWorkspace = await db.query.workspaceSetting.findFirst({
+      where: eq(schema.workspaceSetting.id, schema.WORKSPACE_SETTING_ID),
+    });
+    const v = await makeVoucher(db);
+
+    try {
+      await db
+        .insert(schema.workspaceSetting)
+        .values({ id: schema.WORKSPACE_SETTING_ID, defaultCurrency: "EUR" })
+        .onConflictDoUpdate({
+          target: schema.workspaceSetting.id,
+          set: { defaultCurrency: "EUR", updatedAt: new Date() },
+        });
+
+      const preview = await validate(db, { voucherCode: v.code });
+      expect(preview.preview?.finalOrder.currency).toBe("EUR");
+
+      const idempotencyKey = `legacy-${Date.now()}`;
+      await db.insert(schema.redemption).values({
+        voucherId: v.id,
+        result: "SUCCESS",
+        amount: 0,
+        breakdown: { breakdown: [] },
+        idempotencyKey,
+      });
+      const replay = await redeem(db, { voucherCode: v.code, idempotencyKey });
+      expect(replay.ok).toBe(true);
+      if (replay.ok) {
+        expect(replay.finalOrder.currency).toBe("EUR");
+        await db
+          .update(schema.voucher)
+          .set({ redemptionCount: 1 })
+          .where(eq(schema.voucher.id, v.id));
+        const legacyRollback = await rollback(db, replay.redemptionId);
+        expect(legacyRollback.ok).toBe(true);
+        if (legacyRollback.ok) expect(legacyRollback.finalOrder.currency).toBe("EUR");
+      }
+
+      const redemption = await redeem(db, {
+        voucherCode: v.code,
+        order: { amount: 5_000, currency: "EUR" },
+      });
+      expect(redemption.ok).toBe(true);
+      if (redemption.ok) {
+        await db
+          .update(schema.workspaceSetting)
+          .set({ defaultCurrency: "AED", updatedAt: new Date() })
+          .where(eq(schema.workspaceSetting.id, schema.WORKSPACE_SETTING_ID));
+        const result = await rollback(db, redemption.redemptionId);
+        expect(result.ok).toBe(true);
+        if (result.ok) expect(result.finalOrder.currency).toBe("EUR");
+      }
+    } finally {
+      await cleanup(db, v.id);
+      if (previousWorkspace) {
+        await db
+          .update(schema.workspaceSetting)
+          .set({
+            name: previousWorkspace.name,
+            defaultCurrency: previousWorkspace.defaultCurrency,
+            defaultTimezone: previousWorkspace.defaultTimezone,
+            updatedAt: previousWorkspace.updatedAt,
+          })
+          .where(eq(schema.workspaceSetting.id, schema.WORKSPACE_SETTING_ID));
+      } else {
+        await db
+          .delete(schema.workspaceSetting)
+          .where(eq(schema.workspaceSetting.id, schema.WORKSPACE_SETTING_ID));
+      }
+    }
+  });
+
   it("refuses redemption for a disabled voucher", async () => {
     if (!db) throw new Error("db not initialized");
     const v = await makeVoucher(db, { active: false });
@@ -102,6 +176,76 @@ describe.skipIf(!enabled)("redeem (live DB)", () => {
 
     await cleanup(db, v.id);
     await db.delete(schema.campaign).where(eq(schema.campaign.id, campaign.id));
+  });
+
+  it("fails closed across validation, qualification, and redemption for soft-deleted campaigns", async () => {
+    if (!db) throw new Error("db not initialized");
+    const [customer] = await db
+      .insert(schema.customer)
+      .values({})
+      .returning({ id: schema.customer.id });
+    const [campaign] = await db
+      .insert(schema.campaign)
+      .values({
+        name: "Soft-deleted redemption campaign",
+        type: "DISCOUNT",
+        status: "active",
+        currency: "USD",
+      })
+      .returning({ id: schema.campaign.id });
+    if (!customer || !campaign) throw new Error("soft-delete fixture insert failed");
+
+    const voucherA = await makeVoucher(db, {
+      campaignId: campaign.id,
+      customerId: customer.id,
+    });
+    const voucherB = await makeVoucher(db, {
+      campaignId: campaign.id,
+      customerId: customer.id,
+    });
+    await db
+      .update(schema.campaign)
+      .set({ deletedAt: new Date() })
+      .where(eq(schema.campaign.id, campaign.id));
+
+    const validation = await validate(db, {
+      voucherCode: voucherA.code,
+      customerId: customer.id,
+      order: { amount: 5_000, currency: "USD" },
+    });
+    expect(validation).toMatchObject({ valid: false, code: "campaign_inactive" });
+
+    const qualification = await qualify(db, {
+      customerId: customer.id,
+      order: { amount: 5_000, currency: "USD" },
+      filters: { includeSkipped: true },
+    });
+    expect(qualification.eligible.map((voucher) => voucher.code)).not.toContain(voucherA.code);
+    expect(qualification.skipped).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: voucherA.code, reason: "campaign_inactive" }),
+        expect.objectContaining({ code: voucherB.code, reason: "campaign_inactive" }),
+      ]),
+    );
+
+    const single = await redeem(db, {
+      voucherCode: voucherA.code,
+      customerId: customer.id,
+      order: { amount: 5_000, currency: "USD" },
+    });
+    expect(single).toMatchObject({ ok: false, code: "campaign_inactive" });
+
+    const stacked = await stackRedeem(db, {
+      voucherCodes: [voucherA.code, voucherB.code],
+      customerId: customer.id,
+      order: { amount: 5_000, currency: "USD" },
+    });
+    expect(stacked).toMatchObject({ ok: false, code: "campaign_inactive" });
+
+    await cleanup(db, voucherA.id);
+    await cleanup(db, voucherB.id);
+    await db.delete(schema.campaign).where(eq(schema.campaign.id, campaign.id));
+    await db.delete(schema.customer).where(eq(schema.customer.id, customer.id));
   });
 
   it("refuses redemption when a discount has no effect", async () => {
