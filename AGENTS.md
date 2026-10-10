@@ -16,8 +16,9 @@ CLI, MCP server. MIT, monorepo (pnpm workspaces + turbo).
   The PATH export must be in the same shell invocation (it does not persist
   across separate shells). Without it, lefthook pre-commit hooks fail on
   `ERR_PNPM_UNSUPPORTED_ENGINE`.
-- **Local runs:** `pnpm --config.engine-strict=false --filter @offerkit/web dev --port 31000`
-  (used while local Node was still 24; with Node 26 installed, plain `dev` works).
+- **Local runs:** from the repo root (`/Users/ashishdaga/offerkit/offerkit`), run:
+  `export PNPM_HOME="$HOME/Library/pnpm"; export PATH="$PNPM_HOME/bin:$PNPM_HOME:$PATH"; pnpm --filter @offerkit/web dev --port 31000`
+  Always include the `PNPM_HOME`/`PATH` prelude and run from the repo root. The working directory in the environment is `/Users/ashishdaga/offerkit` — **do not** run from there; `cd /Users/ashishdaga/offerkit/offerkit` first or pass `--workspace-root`. Best: `cd /Users/ashishdaga/offerkit/offerkit && export PNPM_HOME="$HOME/Library/pnpm"; export PATH="$PNPM_HOME/bin:$PNPM_HOME:$PATH"; pnpm --filter @offerkit/web dev --port 31000`
 - **Ports:** `:3000` Docker web (published image), `:31000` local `next dev`,
   `:5432` Postgres, `:6379` Redis (both from `docker compose up -d postgres redis`).
 - `.env` at repo root is the single env source. Next.js does **not** read it
