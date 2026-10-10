@@ -1,7 +1,8 @@
 import { z } from "zod";
-import { scanEarn, resolveDefaultQrProgram } from "@offerkit/core/loyalty";
+import { scanEarn, getMemberByCardCode, getMemberByPhone, resolveDefaultQrProgram } from "@offerkit/core/loyalty";
 import { db } from "@/lib/db";
 import { authorizeScan } from "./authorize";
+import type { BrandContext } from "./brands";
 
 const scanInput = z
   .object({
@@ -46,7 +47,13 @@ function json(body: unknown, status = 200): Response {
  * All business logic lives in @offerkit/core — this is a thin adapter.
  */
 export async function handleScan(request: Request): Promise<Response> {
-  await authorizeScan(request);
+  let ctx: BrandContext | null = null;
+  try {
+    ctx = await authorizeScan(request);
+  } catch (err) {
+    if (err instanceof Response) return err;
+    throw err;
+  }
 
   let payload: unknown;
   try {
@@ -64,13 +71,30 @@ export async function handleScan(request: Request): Promise<Response> {
     );
   }
 
+  // Wrong-brand gate in brand mode: if a member exists for the provided card/phone,
+  // reject if they belong to a different program than the terminal's brand.
+  if (ctx) {
+    const identifier = parsed.data.cardCode ? { type: "card" as const, v: parsed.data.cardCode } : parsed.data.phone ? { type: "phone" as const, v: parsed.data.phone } : null;
+    if (identifier) {
+      let member: { programId: string } | null = null;
+      if (identifier.type === "card") {
+        member = await getMemberByCardCode(db(), identifier.v);
+      } else if (identifier.type === "phone") {
+        member = await getMemberByPhone(db(), identifier.v);
+      }
+      if (member && member.programId !== ctx.programId) {
+        return json({ ok: false, code: "wrong_brand", message: "Wrong brand for this card/phone" }, 403);
+      }
+    }
+  }
+
   // Major units → minor units (paise), matching LoyaltyEarnFormula semantics.
   const amountMinor = Math.round(parsed.data.amount * 100);
 
   // A `name` alongside a phone opts into quick-enroll when the phone is new.
-  let quickEnroll: { name: string; programId: string } | undefined;
+  let quickEnroll: { name: string; programId: string; email?: string } | undefined;
   if (parsed.data.name && parsed.data.phone) {
-    const programId = parsed.data.programId ?? (await resolveDefaultQrProgram(db()));
+    const programId = ctx ? ctx.programId : parsed.data.programId ?? (await resolveDefaultQrProgram(db()));
     if (!programId) {
       return json(
         { ok: false, code: "validation_error", message: "No loyalty program configured for enroll" },

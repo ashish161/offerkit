@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Check, Loader2, Plus, UserPlus } from "lucide-react";
 import { T } from "gt-next/client";
 import { Button } from "@/components/ui/button";
@@ -31,6 +31,20 @@ type FieldErrors = Partial<Record<"cardCode" | "phone" | "amount" | "billNumber"
 
 const PHONE_DIGITS = (v: string) => v.replace(/\D/g, "");
 
+const pinStorageKey = (brand: string) => `offerkit.brand.pin.${brand}`;
+
+const readStoredPin = (brand: string): string => {
+  if (!brand) return "";
+  try {
+    return sessionStorage.getItem(pinStorageKey(brand)) ?? "";
+  } catch {
+    return "";
+  }
+};
+
+const BRAND_SELECT_CLASS =
+  "h-8 w-full min-w-0 rounded-lg border border-input bg-transparent px-2.5 py-1 text-base outline-none transition-colors focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 disabled:pointer-events-none disabled:cursor-not-allowed disabled:bg-input/50 disabled:opacity-50 md:text-sm dark:bg-input/30";
+
 export default function ScanPage() {
   const [cardCode, setCardCode] = useState("");
   const [phone, setPhone] = useState("");
@@ -43,6 +57,54 @@ export default function ScanPage() {
   const [result, setResult] = useState<ScanResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
+
+  // Multi-tenant brand mode. Empty list (or a failed fetch) = legacy UI — no
+  // brand controls and no brand headers, exactly as before multi-tenancy.
+  const [brands, setBrands] = useState<string[]>([]);
+  const [brand, setBrand] = useState("");
+  const [pin, setPin] = useState("");
+  const brandMode = brands.length > 0;
+
+  useEffect(() => {
+    let mounted = true;
+    (async () => {
+      try {
+        const res = await fetch("/api/brands");
+        if (!res.ok) throw new Error("brands unavailable");
+        const data = (await res.json()) as { brands?: unknown };
+        if (!mounted) return;
+        const list = Array.isArray(data.brands)
+          ? data.brands.filter((b): b is string => typeof b === "string")
+          : [];
+        setBrands(list);
+        const first = list[0] ?? "";
+        if (first) {
+          setBrand(first);
+          setPin(readStoredPin(first));
+        }
+      } catch {
+        if (mounted) setBrands([]);
+      }
+    })();
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  const handleBrandChange = (value: string) => {
+    setBrand(value);
+    setPin(readStoredPin(value));
+  };
+
+  const handlePinChange = (value: string) => {
+    setPin(value);
+    if (!brand) return;
+    try {
+      sessionStorage.setItem(pinStorageKey(brand), value);
+    } catch {
+      // sessionStorage can be unavailable (private mode) — PIN just won't persist.
+    }
+  };
 
   const clearFieldError = (field: keyof FieldErrors) =>
     setFieldErrors((prev) => (prev[field] ? { ...prev, [field]: undefined } : prev));
@@ -96,9 +158,14 @@ export default function ScanPage() {
     setError(null);
     setResult(null);
     try {
+      const headers: Record<string, string> = { "content-type": "application/json" };
+      if (brandMode) {
+        if (brand) headers["X-Brand"] = brand;
+        headers["X-Brand-Pin"] = pin;
+      }
       const res = await fetch("/api/scan", {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers,
         body: JSON.stringify({
           ...(cardCode.trim() ? { cardCode: cardCode.trim() } : {}),
           ...(phone.trim() ? { phone: phone.trim() } : {}),
@@ -124,8 +191,18 @@ export default function ScanPage() {
         setEnroll(true);
         setError(null);
         setFieldErrors({});
+      } else if (
+        body.code === "unknown_brand" ||
+        body.code === "invalid_pin" ||
+        body.code === "wrong_brand"
+      ) {
+        // Brand/PIN failures aren't tied to a form field — surface the server's
+        // message at the top of the form.
+        setFieldErrors({});
+        setError(body.message || "Brand authentication failed");
       } else {
-        const { field, general } = mapServerError(body.message);
+        const message = body.message || "Something went wrong";
+        const { field, general } = mapServerError(message);
         setFieldErrors(field);
         setError(general);
       }
@@ -151,6 +228,45 @@ export default function ScanPage() {
         </CardHeader>
         <CardContent>
           <form onSubmit={submit} className="space-y-4">
+            {brandMode && (
+              <div className="space-y-4 rounded-lg border border-primary/30 bg-primary/5 p-4">
+                <div className="space-y-2">
+                  <Label htmlFor="brand">
+                    <T>Brand</T>
+                  </Label>
+                  <select
+                    id="brand"
+                    name="brand"
+                    value={brand}
+                    disabled={submitting}
+                    onChange={(e) => handleBrandChange(e.target.value)}
+                    className={BRAND_SELECT_CLASS}
+                  >
+                    {brands.map((b) => (
+                      <option key={b} value={b}>
+                        {b}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="brandPin">
+                    <T>PIN</T>
+                  </Label>
+                  <Input
+                    id="brandPin"
+                    name="brandPin"
+                    type="password"
+                    autoComplete="off"
+                    placeholder="••••"
+                    value={pin}
+                    disabled={submitting}
+                    onChange={(e) => handlePinChange(e.target.value)}
+                  />
+                </div>
+              </div>
+            )}
+
             <div className="space-y-2">
               <Label htmlFor="cardCode">
                 <T>Card code</T>

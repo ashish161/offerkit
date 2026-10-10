@@ -238,6 +238,26 @@ Re-exported from `@offerkit/core/loyalty` (see end of `loyalty/index.ts`).
   can race and create two customers (no unique index on phone, by design).
 - Single-currency assumption: amount entered in major units, ×100 to minor.
 
+### Multi-tenant QR loyalty (branch `feature/multi_tenant`)
+
+Lets one deployment serve several brands at the scan terminal. Config is a single
+env var, read at **request time**:
+
+- **`MULTI_TENANT_BRANDS`** — JSON map `{"BrandA":{"programId":"<uuid>","pin":"1234"},…}`.
+  Unset/empty/invalid JSON ⇒ **legacy single-brand mode** (today's behavior, no guard).
+
+| file | role |
+|---|---|
+| `apps/web/src/server/qr-loyalty/brands.ts` | `parseBrands()` (per entry: uuid `programId` + non-empty `pin`; bad JSON/fields dropped → `{}`), `brandFromHeader()`, `listBrandNames()` (sorted) |
+| `apps/web/src/server/qr-loyalty/authorize.ts` | `authorizeScan()` — legacy ⇒ `null`; else requires `X-Brand` + `X-Brand-Pin`, **constant-time** PIN compare (`timingSafeEqual`); 401 `unknown_brand` / `invalid_pin` |
+| `apps/web/src/server/qr-loyalty/scan.ts` | **wrong-brand gate** (member `programId` ≠ brand ⇒ 403 `wrong_brand`) + quick-enroll into the brand's `programId`; legacy path byte-for-byte |
+| `apps/web/src/app/api/brands/route.ts` | `GET /api/brands` → `{ brands: string[] }` (sorted; empty in legacy mode) |
+| `apps/web/src/app/scan/page.tsx` | brand `<select>` + PIN field (from `GET /api/brands`) sent as headers, PIN cached in `sessionStorage` per brand; **hidden in legacy mode** |
+
+**Hard rule:** this feature touches **no engine files** — nothing in
+`packages/core`, `packages/db`, `packages/contract`, or any upstream-owned
+router. All changes live in the POC adapter files above, the `/scan` page, and config.
+
 ---
 
 ## 5. Product/docs notes
