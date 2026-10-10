@@ -8,6 +8,14 @@ terminal without changing any engine code (no `packages/core`, `packages/db`,
 (`apps/web/src/server/qr-loyalty/*`, `/scan` and `/card/[code]` pages, tests,
 config) — zero files that exist in upstream OfferKit.
 
+> **Update (DB-backed brands):** brands are now managed by admins in the
+> dashboard (**Settings → Brands**), stored in the new `qr_brand` table
+> (`packages/db/src/schema/qr-brand.ts`, migration `0027_*`) with **hashed**
+> PINs (`better-auth/crypto`). The DB is the source of truth;
+> `MULTI_TENANT_BRANDS` is now a **legacy fallback** used only when `qr_brand`
+> has no active rows. This is the one additive `packages/db` change (no engine
+> behavior). The env-map description below is the original POC design.
+
 ## 1. Why this works
 
 Brand identity already exists in the data, tagged by `loyalty_program.id`:

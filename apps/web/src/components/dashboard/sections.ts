@@ -14,6 +14,7 @@ import {
   ScrollText,
   Settings,
   ShoppingBag,
+  Store,
   TicketPercent,
   UserPlus,
   Users,
@@ -169,6 +170,13 @@ export const dashboardSections: DashboardSection[] = [
         label: "Users",
         description: "Admin-only staff accounts and role management.",
         icon: Boxes,
+        adminOnly: true,
+      },
+      {
+        href: "/settings/brands",
+        label: "Brands",
+        description: "Loyalty brands, their programs and terminal PINs.",
+        icon: Store,
         adminOnly: true,
       },
       {

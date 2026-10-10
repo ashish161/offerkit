@@ -102,19 +102,24 @@ type CustomerDetailResponse =
   | { ok: true; report: BrandCustomerDetail }
   | { ok: false; code: string; message: string };
 
-const pinStorageKey = (brand: string) => `offerkit.brand.pin.${brand}`;
+const BRAND_NAME_KEY = "offerkit.brand.name";
+const BRAND_PIN_KEY = "offerkit.brand.pin";
 
-const readStoredPin = (brand: string): string => {
-  if (!brand) return "";
+const readStored = (key: string): string => {
   try {
-    return sessionStorage.getItem(pinStorageKey(brand)) ?? "";
+    return sessionStorage.getItem(key) ?? "";
   } catch {
     return "";
   }
 };
 
-const BRAND_SELECT_CLASS =
-  "h-8 w-full min-w-0 rounded-lg border border-input bg-transparent px-2.5 py-1 text-base outline-none transition-colors focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 disabled:pointer-events-none disabled:cursor-not-allowed disabled:bg-input/50 disabled:opacity-50 md:text-sm dark:bg-input/30";
+const writeStored = (key: string, value: string): void => {
+  try {
+    sessionStorage.setItem(key, value);
+  } catch {
+    // sessionStorage can be unavailable (private mode) — value just won't persist.
+  }
+};
 
 function Kpi({ label, value }: { label: string; value: string }) {
   return (
@@ -126,10 +131,10 @@ function Kpi({ label, value }: { label: string; value: string }) {
 }
 
 export default function ReportsPage() {
-  const [brands, setBrands] = useState<string[]>([]);
+  const [multiTenant, setMultiTenant] = useState(false);
   const [brand, setBrand] = useState("");
   const [pin, setPin] = useState("");
-  const brandMode = brands.length > 0;
+  const brandMode = multiTenant;
 
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -145,7 +150,7 @@ export default function ReportsPage() {
   const authHeaders = (): Record<string, string> => {
     const headers: Record<string, string> = {};
     if (brandMode) {
-      if (brand) headers["X-Brand"] = brand;
+      if (brand.trim()) headers["X-Brand"] = brand.trim();
       headers["X-Brand-Pin"] = pin;
     }
     return headers;
@@ -165,23 +170,20 @@ export default function ReportsPage() {
   useEffect(() => {
     let mounted = true;
     (async () => {
+      let multi = false;
       try {
         const res = await fetch("/api/brands");
-        if (!res.ok) throw new Error("brands unavailable");
-        const data = (await res.json()) as { brands?: unknown };
-        if (!mounted) return;
-        const list = Array.isArray(data.brands)
-          ? data.brands.filter((b): b is string => typeof b === "string")
-          : [];
-        setBrands(list);
-        const first = list[0] ?? "";
-        if (first) {
-          setBrand(first);
-          setPin(readStoredPin(first));
+        if (res.ok) {
+          const data = (await res.json()) as { multiTenant?: unknown };
+          multi = data.multiTenant === true;
         }
       } catch {
-        if (mounted) setBrands([]);
+        multi = false;
       }
+      if (!mounted) return;
+      setBrand(readStored(BRAND_NAME_KEY));
+      setPin(readStored(BRAND_PIN_KEY));
+      setMultiTenant(multi);
     })();
     return () => {
       mounted = false;
@@ -190,7 +192,7 @@ export default function ReportsPage() {
 
   const handleBrandChange = (value: string) => {
     setBrand(value);
-    setPin(readStoredPin(value));
+    writeStored(BRAND_NAME_KEY, value);
     setReport(null);
     setCustomers([]);
     setDetail(null);
@@ -200,12 +202,7 @@ export default function ReportsPage() {
 
   const handlePinChange = (value: string) => {
     setPin(value);
-    if (!brand) return;
-    try {
-      sessionStorage.setItem(pinStorageKey(brand), value);
-    } catch {
-      // sessionStorage can be unavailable (private mode) — PIN just won't persist.
-    }
+    writeStored(BRAND_PIN_KEY, value);
   };
 
   const loadCustomers = async (search: string) => {
@@ -299,20 +296,15 @@ export default function ReportsPage() {
                   <Label htmlFor="brand">
                     <T>Brand</T>
                   </Label>
-                  <select
+                  <Input
                     id="brand"
                     name="brand"
+                    autoComplete="off"
+                    placeholder="e.g. BrandA"
                     value={brand}
                     disabled={busy}
                     onChange={(e) => handleBrandChange(e.target.value)}
-                    className={BRAND_SELECT_CLASS}
-                  >
-                    {brands.map((b) => (
-                      <option key={b} value={b}>
-                        {b}
-                      </option>
-                    ))}
-                  </select>
+                  />
                 </div>
                 <div className="w-32 space-y-2">
                   <Label htmlFor="brandPin">

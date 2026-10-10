@@ -163,7 +163,7 @@ points are credited using the program's earning rule.
 |---|---|
 | `packages/db` | `loyalty_member.card_code` (unique, nullable) — migration `0024_handy_piledriver.sql` |
 | `packages/core/src/loyalty/qr.ts` | ALL logic: `computeEarnPoints`, `resolveScanEarningRule`, `ensureCardCode`, `getMemberByCardCode`, `getMemberByPhone`, `normalizePhone`, `quickEnroll`, `resolveDefaultQrProgram`, `scanEarn`, `getCardDetails` — UI-agnostic |
-| `apps/web/src/server/qr-loyalty/` | thin adapters: `scan.ts` (earn: parse/validate → call core), `redeem.ts` (redeem + rewards list), `rewards.ts` (reward read helpers), `authorize.ts` (brand+PIN guard), `brands.ts` (env parsing), `reports.ts` (per-brand read-only reports), `report-scope.ts` (report auth gate) |
+| `apps/web/src/server/qr-loyalty/` | thin adapters: `scan.ts` (earn: parse/validate → call core), `redeem.ts` (redeem + rewards list), `rewards.ts` (reward read helpers), `authorize.ts` (brand+PIN guard), `brands.ts` (DB + env brand resolution), `pins.ts` (PIN hash/verify), `admin.ts` (brand CRUD), `reports.ts` (per-brand read-only reports), `report-scope.ts` (report auth gate) |
 | `apps/web/src/app/api/scan/route.ts` | `POST` → `handleScan` (earn) |
 | `apps/web/src/app/api/redeem/route.ts` | `POST` → `handleRedeem` (merchant terminal redemption; guarded by brand+PIN) |
 | `apps/web/src/app/api/rewards/route.ts` | `GET` → rewards list for redemption |
@@ -229,9 +229,10 @@ Re-exported from `@offerkit/core/loyalty` (see end of `loyalty/index.ts`).
 
 ### POC limitations (deliberate, next steps)
 
-- **`/scan` is unauthenticated** — flip `authorizeScan()` in
-  `apps/web/src/server/qr-loyalty/authorize.ts` (one file, all call sites covered).
-  Planned: shared PIN, architected to accept guards later.
+- **`/scan` is unauthenticated in legacy mode** — when no `qr_brand` rows (and no
+  `MULTI_TENANT_BRANDS`) exist there is no brand/PIN guard. Create brands in
+  **Settings → Brands** (or set the env var) to turn the guard on; all call sites
+  go through `authorizeScan()` (`apps/web/src/server/qr-loyalty/authorize.ts`).
 - No QR image (skipped for POC) and no camera scan — manual code entry only.
   Adding a QR later: encode `https://host/card/[code]`; repo has **no QR lib**
   (would need `qrcode` or `next/og` + encoder).
@@ -244,29 +245,43 @@ Re-exported from `@offerkit/core/loyalty` (see end of `loyalty/index.ts`).
 
 ### Multi-tenant QR loyalty (branch `feature/multi_tenant`)
 
-Lets one deployment serve several brands at the scan terminal. Config is a single
-env var, read at **request time**:
+Lets one deployment serve several brands at the scan terminal. A brand is a name
++ program + PIN, managed by admins in the dashboard; the **DB (`qr_brand` table)
+is the source of truth**, with the legacy env var as a fallback:
 
-- **`MULTI_TENANT_BRANDS`** — JSON map `{"BrandA":{"programId":"<uuid>","pin":"1234"},…}`.
-  Unset/empty/invalid JSON ⇒ **legacy single-brand mode** (today's behavior, no guard).
+- **DB brands** — admin UI at **Settings → Brands** (`/settings/brands`, admin
+  only) backed by `GET/POST /api/admin/brands` and `PATCH/DELETE
+  /api/admin/brands/:id`. Names are unique (case-insensitive) among active rows;
+  PINs are stored **hashed** (`better-auth/crypto`). Changes take effect on the
+  next request (no restart).
+- **`MULTI_TENANT_BRANDS`** (legacy) — JSON map
+  `{"BrandA":{"programId":"<uuid>","pin":"1234"},…}`, read at **request time**.
+  Used **only when `qr_brand` has no active rows**. Unset/empty/invalid JSON ⇒
+  **legacy single-brand mode** (today's behavior, no guard).
 
 | file | role |
 |---|---|
-| `apps/web/src/server/qr-loyalty/brands.ts` | `parseBrands()` (per entry: uuid `programId` + non-empty `pin`; bad JSON/fields dropped → `{}`), `brandFromHeader()`, `listBrandNames()` (sorted) |
-| `apps/web/src/server/qr-loyalty/authorize.ts` | `authorizeScan()` — legacy ⇒ `null`; else requires `X-Brand` + `X-Brand-Pin`, **constant-time** PIN compare (`timingSafeEqual`); 401 `unknown_brand` / `invalid_pin` |
+| `packages/db/src/schema/qr-brand.ts` | `qr_brand` table: `name`, `programId` (FK→loyaltyProgram), `pin_hash`, `active`, `deletedAt`; unique index on `lower(name)` where `deleted_at IS NULL` |
+| `apps/web/src/server/qr-loyalty/pins.ts` | `hashPin()` / `verifyPin()` — wrap `better-auth/crypto`; PINs are never stored or compared in plaintext |
+| `apps/web/src/server/qr-loyalty/brands.ts` | `loadBrands(db)` (DB-first → env fallback via `parseBrands()`); `parseBrands()` (legacy: uuid `programId` + non-empty `pin`; bad JSON/fields dropped → `{}`), `brandFromHeader()` |
+| `apps/web/src/server/qr-loyalty/authorize.ts` | `authorizeScan()` — legacy ⇒ `null`; else requires `X-Brand` + `X-Brand-Pin`, case-insensitive name lookup, **`verifyPin()`**; 401 `unknown_brand` / `invalid_pin`; returns `{ brand, programId, brandId }` |
+| `apps/web/src/server/qr-loyalty/admin.ts` | admin CRUD: `requireAdminSession`, `listQrBrands`, `createQrBrand`, `updateQrBrand`, `deleteQrBrand` (soft delete), zod `brandCreateInput`/`brandUpdateInput`, `isUniqueViolation` |
+| `apps/web/src/app/api/admin/brands/route.ts` · `.../[id]/route.ts` | admin REST (GET list / POST create; PATCH update / DELETE) — admin-session gated |
+| `apps/web/src/app/(dashboard)/settings/brands/` | admin UI (`page.tsx`): create, rename, reassign program, reset PIN, activate/deactivate, delete; admin-only redirect guard (`layout.tsx`). Route guard tests in `apps/web/src/app/api/admin/brands/route.test.ts` (401/403/400/404, DB mocked to prove short-circuit) |
 | `apps/web/src/server/qr-loyalty/scan.ts` | **cards are brand-locked** (member `programId` ≠ brand ⇒ 403 `wrong_brand`); **phones are brand-scoped** — the phone's membership in *this brand's program* is credited, and a phone with no membership there is auto-enrolled into the brand's program on the fly (reusing the shared `customer` row when the phone is already known; otherwise 404 `member_not_found` so `/scan` prompts for a name). A shopper can hold memberships in several brands at once. Legacy path byte-for-byte |
-| `apps/web/src/app/api/brands/route.ts` | `GET /api/brands` → `{ brands: string[] }` (sorted; empty in legacy mode) |
-| `apps/web/src/app/scan/page.tsx` | brand `<select>` + PIN field (from `GET /api/brands`) sent as headers, PIN cached in `sessionStorage` per brand; **hidden in legacy mode**. Now has **Earn** (credit points via scan) and **Redeem** (spend points on a program reward) modes. |
+| `apps/web/src/app/api/brands/route.ts` | `GET /api/brands` → `{ multiTenant: boolean }` only. Deliberately does **not** return brand names (brands must not enumerate each other) |
+| `apps/web/src/app/scan/page.tsx` | free-text **brand name + PIN** inputs (from `GET /api/brands`), sent as headers, cached in `sessionStorage`; **hidden in legacy mode**. Now has **Earn** (credit points via scan) and **Redeem** (spend points on a program reward) modes. |
 | `apps/web/src/server/qr-loyalty/reports.ts` | **read-only** per-brand reports: `getBrandReport(db, programId)` (summary, 30-day daily, top customers, recent scans), `getBrandCustomers(db, programId, { search, limit })` (customer list w/ tier, balance, lifetime, bills, revenue, last activity), `getBrandCustomerReport(db, programId, memberId)` (one customer: profile, tier + next tier, KPIs, points ledger, scans). The ledger carries a **derived tier timeline**: `lifetimeAfter` + `tierName`/`previousTierName`/`tierChanged`, reconstructed by replaying the ledger against the *current* ladder (there is no tier-history table — see below). Every query scoped to one `programId`, pure reads, no engine change. Mirrors `docs/multi-tenant-reporting.sql` |
 | `apps/web/src/server/qr-loyalty/report-scope.ts` | `resolveReportScope(request)` — shared PIN gate for the report routes: `authorizeScan()` (same as `/api/scan`) → `{ programId }`, or legacy fallback `resolveDefaultQrProgram`; returns a ready 401/404 `Response` on failure |
 | `apps/web/src/app/api/reports/route.ts` | `GET /api/reports` — brand aggregate, guarded by `resolveReportScope` |
 | `apps/web/src/app/api/reports/customers/route.ts` | `GET /api/reports/customers?search=&limit=` — brand's customer list (same gate) |
 | `apps/web/src/app/api/reports/customer/route.ts` | `GET /api/reports/customer?memberId=` — one customer's detail (same gate); non-UUID → 400, member of another brand → 404 `member_not_found` |
-| `apps/web/src/app/reports/page.tsx` | public **read-only** brand report page: brand `<select>` + PIN (reuses `/api/brands` + `sessionStorage` PIN), KPI cards + daily/recent-scan tables, a searchable **Customers** table, and a per-customer panel (ledger + scans) whose ledger shows the **derived tier** per entry (highlights promotions). No mutations |
+| `apps/web/src/app/reports/page.tsx` | public **read-only** brand report page: free-text brand name + PIN (reuses `/api/brands` + `sessionStorage`), KPI cards + daily/recent-scan tables, a searchable **Customers** table, and a per-customer panel (ledger + scans) whose ledger shows the **derived tier** per entry (highlights promotions). No mutations |
 
 `apps/web/scripts/seed-reporting-demo.mts` (`pnpm --filter @offerkit/web
 seed-reporting-demo [--per-brand=7] [--yes]`) seeds realistic per-brand activity
-for `/reports`: reads brands from `MULTI_TENANT_BRANDS`, **simulates the engine's
+for `/reports`: reads brands from `qr_brand` (falling back to `MULTI_TENANT_BRANDS`),
+**simulates the engine's
 earn logic** (tier multiplier + tier re-pick, so balances/lifetimes/tiers are
 consistent), writes complete `customer`/`loyalty_member`/`loyalty_transaction`/
 `order`/`event` rows backdated across ~26 days, and is **idempotent** (deletes
@@ -308,10 +323,12 @@ recomputes the tier) emit no event. For a durable record, emit a
 `loyalty.tier.changed` event in `earn()` or add a tier-history table (both engine
 changes, deliberately out of POC scope).
 
-**Hard rule:** this feature touches **no engine files** — nothing in
-`packages/core`, `packages/db`, `packages/contract`, or any upstream-owned
-router. All changes live in the POC adapter files above, the `/scan` + `/reports`
-pages, and config.
+**Hard rule:** this feature is **additive** — it changes **no engine behavior**.
+Nothing in `packages/core` or `packages/contract`, and no upstream-owned router.
+The only `packages/db` change is the additive `qr_brand` table
+(`schema/qr-brand.ts` + migration `0027_*`); schema files are registered in
+`schema/index.ts`. All other changes live in the POC adapter files above, the
+`/scan` + `/reports` pages, the admin UI/REST routes, and config.
 
 ---
 

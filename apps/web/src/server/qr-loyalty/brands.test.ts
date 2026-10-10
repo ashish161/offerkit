@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { brandFromHeader, listBrandNames, parseBrands } from "./brands";
+import { brandFromHeader, parseBrands } from "./brands";
 
 const PID = "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11";
 
@@ -30,9 +30,5 @@ describe("brands", () => {
     expect(brandFromHeader(new Request("http://x", { headers: { "X-Brand": "  B  " } }))).toBe("B");
     expect(brandFromHeader(new Request("http://x"))).toBeNull();
     expect(brandFromHeader(new Request("http://x", { headers: { "x-brand": "   " } }))).toBeNull();
-  });
-
-  it("listBrandNames: sorted", () => {
-    expect(listBrandNames({ B: { programId: PID, pin: "1" }, A: { programId: PID, pin: "2" } })).toEqual(["A", "B"]);
   });
 });

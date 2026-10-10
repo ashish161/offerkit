@@ -63,14 +63,22 @@ type RewardsStatus = "idle" | "loading" | "ready" | "error";
 
 const PHONE_DIGITS = (v: string) => v.replace(/\D/g, "");
 
-const pinStorageKey = (brand: string) => `offerkit.brand.pin.${brand}`;
+const BRAND_NAME_KEY = "offerkit.brand.name";
+const BRAND_PIN_KEY = "offerkit.brand.pin";
 
-const readStoredPin = (brand: string): string => {
-  if (!brand) return "";
+const readStored = (key: string): string => {
   try {
-    return sessionStorage.getItem(pinStorageKey(brand)) ?? "";
+    return sessionStorage.getItem(key) ?? "";
   } catch {
     return "";
+  }
+};
+
+const writeStored = (key: string, value: string): void => {
+  try {
+    sessionStorage.setItem(key, value);
+  } catch {
+    // sessionStorage can be unavailable (private mode) — value just won't persist.
   }
 };
 
@@ -109,33 +117,31 @@ export default function ScanPage() {
   const [error, setError] = useState<string | null>(null);
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
 
-  // Multi-tenant brand mode. Empty list (or a failed fetch) = legacy UI — no
-  // brand controls and no brand headers, exactly as before multi-tenancy.
-  const [brands, setBrands] = useState<string[]>([]);
+  // Multi-tenant brand mode. Brands enter their own name + PIN (no public brand
+  // list, so a brand cannot enumerate the others). When the deployment isn't
+  // multi-tenant, both controls are hidden and no brand headers are sent.
+  const [multiTenant, setMultiTenant] = useState(false);
   const [brand, setBrand] = useState("");
   const [pin, setPin] = useState("");
-  const brandMode = brands.length > 0;
+  const brandMode = multiTenant;
 
   useEffect(() => {
     let mounted = true;
     (async () => {
+      let multi = false;
       try {
         const res = await fetch("/api/brands");
-        if (!res.ok) throw new Error("brands unavailable");
-        const data = (await res.json()) as { brands?: unknown };
-        if (!mounted) return;
-        const list = Array.isArray(data.brands)
-          ? data.brands.filter((b): b is string => typeof b === "string")
-          : [];
-        setBrands(list);
-        const first = list[0] ?? "";
-        if (first) {
-          setBrand(first);
-          setPin(readStoredPin(first));
+        if (res.ok) {
+          const data = (await res.json()) as { multiTenant?: unknown };
+          multi = data.multiTenant === true;
         }
       } catch {
-        if (mounted) setBrands([]);
+        multi = false;
       }
+      if (!mounted) return;
+      setBrand(readStored(BRAND_NAME_KEY));
+      setPin(readStored(BRAND_PIN_KEY));
+      setMultiTenant(multi);
     })();
     return () => {
       mounted = false;
@@ -160,7 +166,7 @@ export default function ScanPage() {
       try {
         const headers: Record<string, string> = {};
         if (brandMode) {
-          if (brand) headers["X-Brand"] = brand;
+          if (brand.trim()) headers["X-Brand"] = brand.trim();
           headers["X-Brand-Pin"] = pin;
         }
         const res = await fetch("/api/rewards", { headers });
@@ -202,18 +208,13 @@ export default function ScanPage() {
 
   const handleBrandChange = (value: string) => {
     setBrand(value);
-    setPin(readStoredPin(value));
+    writeStored(BRAND_NAME_KEY, value);
     setRewardId("");
   };
 
   const handlePinChange = (value: string) => {
     setPin(value);
-    if (!brand) return;
-    try {
-      sessionStorage.setItem(pinStorageKey(brand), value);
-    } catch {
-      // sessionStorage can be unavailable (private mode) — PIN just won't persist.
-    }
+    writeStored(BRAND_PIN_KEY, value);
   };
 
   const clearFieldError = (field: keyof FieldErrors) =>
@@ -273,7 +274,7 @@ export default function ScanPage() {
   const authHeaders = (): Record<string, string> => {
     const headers: Record<string, string> = { "content-type": "application/json" };
     if (brandMode) {
-      if (brand) headers["X-Brand"] = brand;
+      if (brand.trim()) headers["X-Brand"] = brand.trim();
       headers["X-Brand-Pin"] = pin;
     }
     return headers;
@@ -449,20 +450,15 @@ export default function ScanPage() {
                   <Label htmlFor="brand">
                     <T>Brand</T>
                   </Label>
-                  <select
+                  <Input
                     id="brand"
                     name="brand"
+                    autoComplete="off"
+                    placeholder="e.g. BrandA"
                     value={brand}
                     disabled={submitting}
                     onChange={(e) => handleBrandChange(e.target.value)}
-                    className={BRAND_SELECT_CLASS}
-                  >
-                    {brands.map((b) => (
-                      <option key={b} value={b}>
-                        {b}
-                      </option>
-                    ))}
-                  </select>
+                  />
                 </div>
                 <div className="space-y-2">
                   <Label htmlFor="brandPin">

@@ -1,4 +1,4 @@
-import { and, eq, inArray, like } from "drizzle-orm";
+import { and, eq, inArray, isNull, like } from "drizzle-orm";
 import { createInterface } from "node:readline/promises";
 import { stdin as processStdin, stdout as processStdout } from "node:process";
 import { getDb, closeDb } from "@offerkit/db/client";
@@ -164,26 +164,36 @@ const DEFAULT_TIERS: { name: string; threshold: number; earnMultiplier: number }
 const main = async (): Promise<void> => {
   assertLocalDatabase();
 
-  const brandsEnv = process.env["MULTI_TENANT_BRANDS"];
-  if (!brandsEnv) {
-    console.error("MULTI_TENANT_BRANDS is not set — nothing to seed against.");
-    process.exit(1);
-  }
-  let brands: { name: string; programId: string }[];
-  try {
-    const parsed = JSON.parse(brandsEnv) as Record<string, BrandCfg>;
-    brands = Object.entries(parsed)
-      .filter(([, v]) => v && typeof v.programId === "string")
-      .map(([name, v]) => ({ name, programId: v.programId }));
-  } catch {
-    brands = [];
+  const db = getDb();
+
+  // Brands come from the DB (Settings -> Brands) and fall back to the legacy
+  // MULTI_TENANT_BRANDS env map only when no DB brands exist — matching the
+  // app's authorizeScan precedence.
+  let brands: { name: string; programId: string }[] = await db
+    .select({ name: schema.qrBrand.name, programId: schema.qrBrand.programId })
+    .from(schema.qrBrand)
+    .where(and(eq(schema.qrBrand.active, true), isNull(schema.qrBrand.deletedAt)));
+
+  if (brands.length === 0) {
+    const brandsEnv = process.env["MULTI_TENANT_BRANDS"];
+    if (brandsEnv) {
+      try {
+        const parsed = JSON.parse(brandsEnv) as Record<string, BrandCfg>;
+        brands = Object.entries(parsed)
+          .filter(([, v]) => v && typeof v.programId === "string")
+          .map(([name, v]) => ({ name, programId: v.programId }));
+      } catch {
+        brands = [];
+      }
+    }
   }
   if (brands.length === 0) {
-    console.error("MULTI_TENANT_BRANDS has no usable brands.");
+    console.error(
+      "No QR brands found. Create brands in Settings -> Brands (or set MULTI_TENANT_BRANDS).",
+    );
     process.exit(1);
   }
 
-  const db = getDb();
   const programIds = brands.map((b) => b.programId);
 
   const programRows = await db
