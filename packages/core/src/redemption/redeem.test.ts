@@ -408,6 +408,52 @@ describe.skipIf(!enabled)("redeem (live DB)", () => {
     await db.delete(schema.customer).where(eq(schema.customer.id, other.id));
   });
 
+  it("returns customer_not_found (not a 500) for an unknown customer id", async () => {
+    if (!db) throw new Error("db not initialized");
+    const [owner] = await db.insert(schema.customer).values({}).returning({ id: schema.customer.id });
+    if (!owner) throw new Error("customer insert failed");
+    // Valid uuid that maps to no customer row.
+    const unknownId = "00000000-0000-4000-8000-000000000000";
+
+    const unbound = await makeVoucher(db);
+    const unboundResult = await redeem(db, {
+      voucherCode: unbound.code,
+      customerId: unknownId,
+      order: { amount: 5_000, currency: "USD" },
+    });
+    expect(unboundResult.ok).toBe(false);
+    if (!unboundResult.ok) expect(unboundResult.code).toBe("customer_not_found");
+
+    const bound = await makeVoucher(db, { customerId: owner.id });
+    const boundResult = await redeem(db, {
+      voucherCode: bound.code,
+      customerId: unknownId,
+      order: { amount: 5_000, currency: "USD" },
+    });
+    expect(boundResult.ok).toBe(false);
+    if (!boundResult.ok) expect(boundResult.code).toBe("customer_not_found");
+
+    const validation = await validate(db, {
+      voucherCode: unbound.code,
+      customerId: unknownId,
+      order: { amount: 5_000, currency: "USD" },
+    });
+    expect(validation.valid).toBe(false);
+    expect(validation.code).toBe("customer_not_found");
+
+    const stacked = await stackRedeem(db, {
+      voucherCodes: [unbound.code],
+      customerId: unknownId,
+      order: { amount: 5_000, currency: "USD" },
+    });
+    expect(stacked.ok).toBe(false);
+    if (!stacked.ok) expect(stacked.code).toBe("customer_not_found");
+
+    await cleanup(db, unbound.id);
+    await cleanup(db, bound.id);
+    await db.delete(schema.customer).where(eq(schema.customer.id, owner.id));
+  });
+
   it("limits public vouchers to one redemption per customer without a global cap", async () => {
     if (!db) throw new Error("db not initialized");
     const [customerA] = await db.insert(schema.customer).values({}).returning({ id: schema.customer.id });

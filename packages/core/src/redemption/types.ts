@@ -9,6 +9,7 @@ export type RedemptionFailureCode =
   | "per_user_redemption_limit_reached"
   | "customer_required"
   | "customer_mismatch"
+  | "customer_not_found"
   | "validation_failed"
   | "currency_mismatch"
   | "gift_balance_zero"

@@ -87,6 +87,14 @@ async function stackRedeemImpl(
         explanations: [failureExplanation("customer_mismatch")],
       };
     }
+    if (resolvedCustomer.notFound) {
+      return {
+        ok: false,
+        code: "customer_not_found",
+        message: messageFor("customer_not_found"),
+        explanations: [failureExplanation("customer_not_found")],
+      };
+    }
     const resolvedCustomerId = resolvedCustomer.customerId;
 
     if (input.idempotencyKey) {

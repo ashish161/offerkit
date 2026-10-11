@@ -129,6 +129,8 @@ export async function resolveCustomerRef(
   customerId: string | undefined;
   customer: RedemptionCustomerRow | undefined;
   mismatch: boolean;
+  /** An explicit `customerId` was supplied but no such customer row exists. */
+  notFound?: boolean;
 }> {
   const externalId = input.customerExternalId?.trim();
   const internal = input.customerId
@@ -154,6 +156,14 @@ export async function resolveCustomerRef(
   if (internal) return { customerId: internal.id, customer: internal, mismatch: false };
   if (external) return { customerId: external.id, customer: external, mismatch: false };
 
+  // A caller-supplied internal id that resolves to no customer (and is not
+  // reconciled by an external id) is a lookup failure, not a new customer.
+  // Returning it verbatim would later violate the `redemption.customer_id`
+  // foreign key and surface as a 500 instead of a 4xx.
+  if (input.customerId) {
+    return { customerId: undefined, customer: undefined, mismatch: false, notFound: true };
+  }
+
   if (externalId && options.createIfMissing) {
     const [createdRow] = await db
       .insert(schema.customer)
@@ -169,7 +179,7 @@ export async function resolveCustomerRef(
     return { customerId: row?.id, customer: row, mismatch: false };
   }
 
-  return { customerId: input.customerId, customer: undefined, mismatch: false };
+  return { customerId: undefined, customer: undefined, mismatch: false };
 }
 
 async function countNetSuccessfulRedemptions(
@@ -497,6 +507,8 @@ export function messageFor(code: RedemptionFailureCode): string {
       return "A customer is required to use this voucher";
     case "customer_mismatch":
       return "Voucher is assigned to a different customer";
+    case "customer_not_found":
+      return "Customer not found";
     case "validation_failed":
       return "Voucher validation rule did not match";
     case "currency_mismatch":

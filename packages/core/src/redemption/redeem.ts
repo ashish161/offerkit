@@ -85,6 +85,14 @@ function redeemImpl(db: Db, input: RedeemInput): Promise<RedeemResult> {
         explanations: [failureExplanation("customer_mismatch", voucher)],
       };
     }
+    if (resolvedCustomer.notFound) {
+      return {
+        ok: false,
+        code: "customer_not_found",
+        message: messageFor("customer_not_found"),
+        explanations: [failureExplanation("customer_not_found", voucher)],
+      };
+    }
     const resolvedCustomerId = resolvedCustomer.customerId;
 
     const now = new Date();

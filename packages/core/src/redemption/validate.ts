@@ -1,7 +1,7 @@
 import { and, eq, isNull } from "drizzle-orm";
 import { schema, type Db } from "@offerkit/db";
 import { withSpan } from "../observability/index.ts";
-import { getWorkspaceCurrency, resolveCustomerRef, validateVoucher } from "./shared.ts";
+import { getWorkspaceCurrency, messageFor, resolveCustomerRef, validateVoucher } from "./shared.ts";
 import type {
   RedemptionCustomerRow,
   RedemptionCampaignRow,
@@ -59,6 +59,13 @@ async function validateImpl(db: Db, input: ValidateInput): Promise<ValidateResul
       valid: false,
       code: "customer_mismatch",
       message: "Voucher can only be redeemed by the assigned customer",
+    };
+  }
+  if (resolvedCustomer.notFound) {
+    return {
+      valid: false,
+      code: "customer_not_found",
+      message: messageFor("customer_not_found"),
     };
   }
   const customerId = resolvedCustomer.customerId ?? voucher?.customerId ?? undefined;
