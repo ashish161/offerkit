@@ -254,6 +254,9 @@ is the source of truth**, with the legacy env var as a fallback:
   /api/admin/brands/:id`. Names are unique (case-insensitive) among active rows;
   PINs are stored **hashed** (`better-auth/crypto`). Changes take effect on the
   next request (no restart).
+
+**Docs:** `docs/agency-setup-and-operations.md` (running multiple brands /
+  what admins see), `docs/brand-operations.md` (what each brand receives).
 - **`MULTI_TENANT_BRANDS`** (legacy) — JSON map
   `{"BrandA":{"programId":"<uuid>","pin":"1234"},…}`, read at **request time**.
   Used **only when `qr_brand` has no active rows**. Unset/empty/invalid JSON ⇒
