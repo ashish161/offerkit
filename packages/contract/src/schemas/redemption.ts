@@ -158,3 +158,26 @@ export const stackRedeemOutput = z.object({
   message: z.string().optional(),
   explanations: z.array(redemptionExplanation).optional(),
 });
+
+export const redemptionResult = z.enum(["SUCCESS", "FAILURE", "ROLLBACK"]);
+
+// Read model for a redemption ledger row (join of redemption → voucher →
+// campaign, plus the redeem customer). Currencies are in minor units.
+export const redemptionOutput = z.object({
+  id: z.string().uuid(),
+  voucherId: z.string().uuid(),
+  voucherCode: z.string(),
+  campaignId: z.string().uuid().nullable(),
+  currency: z.string().nullable(),
+  customerId: z.string().uuid().nullable(),
+  customerName: z.string().nullable(),
+  customerEmail: z.string().nullable(),
+  result: redemptionResult,
+  failureReason: z.string().nullable(),
+  amount: z.number().int().nullable(),
+  orderId: z.string().uuid().nullable(),
+  externalOrderId: z.string().nullable(),
+  batchId: z.string().uuid().nullable(),
+  idempotencyKey: z.string().nullable(),
+  createdAt: z.string().datetime(),
+});

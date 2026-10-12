@@ -1,5 +1,6 @@
 import type { ComponentType } from "react";
 import {
+  BadgeCheck,
   BarChart3,
   Boxes,
   Cable,
@@ -81,6 +82,12 @@ export const dashboardSections: DashboardSection[] = [
         label: "Vouchers",
         description: "Issued codes, balances, redemption tests, and status changes.",
         icon: TicketPercent,
+      },
+      {
+        href: "/redemptions",
+        label: "Redemptions",
+        description: "Ledger of every voucher redemption attempt, success or failure.",
+        icon: BadgeCheck,
       },
       {
         href: "/orders",

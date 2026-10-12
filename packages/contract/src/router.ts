@@ -6,6 +6,7 @@ import { customers } from "./routes/customers.ts";
 import { loyalty } from "./routes/loyalty.ts";
 import { referrals } from "./routes/referrals.ts";
 import { promotions } from "./routes/promotions.ts";
+import { redemptions } from "./routes/redemptions.ts";
 import { rewardTypes } from "./routes/reward-types.ts";
 import { segments } from "./routes/segments.ts";
 import { validationRules } from "./routes/validation-rules.ts";
@@ -42,6 +43,7 @@ export const contract = {
   campaigns,
   promotions,
   vouchers,
+  redemptions,
   validationRules,
   rewardTypes,
   loyalty,

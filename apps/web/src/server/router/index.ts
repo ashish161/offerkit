@@ -8,6 +8,7 @@ import { campaignsRouter } from "./campaigns";
 import { customersRouter } from "./customers";
 import { loyaltyRouter } from "./loyalty";
 import { promotionsRouter } from "./promotions";
+import { redemptionsRouter } from "./redemptions";
 import { referralsRouter } from "./referrals";
 import { rewardTypesRouter } from "./reward-types";
 import { segmentsRouter } from "./segments";
@@ -50,6 +51,7 @@ export const router = os.router({
   campaigns: campaignsRouter,
   promotions: promotionsRouter,
   vouchers: vouchersRouter,
+  redemptions: redemptionsRouter,
   validationRules: validationRulesRouter,
   rewardTypes: rewardTypesRouter,
   loyalty: loyaltyRouter,
