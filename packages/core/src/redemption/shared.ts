@@ -14,6 +14,14 @@ import type {
 
 type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0];
 
+export async function getWorkspaceCurrency(db: Db | Tx): Promise<string> {
+  const workspace = await db.query.workspaceSetting.findFirst({
+    where: eq(schema.workspaceSetting.id, schema.WORKSPACE_SETTING_ID),
+    columns: { defaultCurrency: true },
+  });
+  return workspace?.defaultCurrency ?? schema.DEFAULT_WORKSPACE_CURRENCY;
+}
+
 export function checkActivation(v: VoucherRow, now: Date): RedemptionFailureCode | null {
   if (!v.active) return "voucher_disabled";
   if (v.startDate && v.startDate > now) return "voucher_expired";
@@ -121,6 +129,8 @@ export async function resolveCustomerRef(
   customerId: string | undefined;
   customer: RedemptionCustomerRow | undefined;
   mismatch: boolean;
+  /** An explicit `customerId` was supplied but no such customer row exists. */
+  notFound?: boolean;
 }> {
   const externalId = input.customerExternalId?.trim();
   const internal = input.customerId
@@ -146,6 +156,14 @@ export async function resolveCustomerRef(
   if (internal) return { customerId: internal.id, customer: internal, mismatch: false };
   if (external) return { customerId: external.id, customer: external, mismatch: false };
 
+  // A caller-supplied internal id that resolves to no customer (and is not
+  // reconciled by an external id) is a lookup failure, not a new customer.
+  // Returning it verbatim would later violate the `redemption.customer_id`
+  // foreign key and surface as a 500 instead of a 4xx.
+  if (input.customerId) {
+    return { customerId: undefined, customer: undefined, mismatch: false, notFound: true };
+  }
+
   if (externalId && options.createIfMissing) {
     const [createdRow] = await db
       .insert(schema.customer)
@@ -161,7 +179,7 @@ export async function resolveCustomerRef(
     return { customerId: row?.id, customer: row, mismatch: false };
   }
 
-  return { customerId: input.customerId, customer: undefined, mismatch: false };
+  return { customerId: undefined, customer: undefined, mismatch: false };
 }
 
 async function countNetSuccessfulRedemptions(
@@ -192,10 +210,11 @@ async function countNetSuccessfulRedemptions(
 
 export function checkCampaignActivation(
   campaign: RedemptionCampaignRow | null | undefined,
+  campaignId: string | null,
   orderCurrency: string | undefined,
   now: Date,
 ): RedemptionFailureCode | null {
-  if (!campaign) return null;
+  if (!campaign) return campaignId ? "campaign_inactive" : null;
   if (campaign.deletedAt || campaign.status !== "active") return "campaign_inactive";
   if (campaign.startDate && campaign.startDate > now) return "campaign_inactive";
   if (campaign.endDate && campaign.endDate < now) return "campaign_inactive";
@@ -284,13 +303,14 @@ export interface GiftPreview {
 export function previewGiftCard(
   v: VoucherRow,
   order: DiscountOrder | undefined,
+  responseCurrency: string,
 ): GiftPreview | null {
   const balance = v.giftBalance ?? 0;
   if (!order) {
     return {
       spend: 0,
       remainingBalance: balance,
-      finalOrder: { amount: 0, currency: "USD" },
+      finalOrder: { amount: 0, currency: responseCurrency },
       breakdown: [],
     };
   }
@@ -313,12 +333,13 @@ export function previewGiftCard(
 export function previewDiscount(
   v: VoucherRow,
   order: DiscountOrder | undefined,
+  responseCurrency: string,
 ): DiscountResult {
   if (!order) {
     return {
       appliedDiscounts: [],
       breakdown: [],
-      finalOrder: { amount: 0, currency: "USD" },
+      finalOrder: { amount: 0, currency: responseCurrency },
     };
   }
   return calculateDiscount({
@@ -344,15 +365,16 @@ export function previewDiscount(
 export async function validateVoucher(
   voucher: VoucherRow | undefined,
   order: DiscountOrder | undefined,
-  campaign?: RedemptionCampaignRow | null,
+  campaign: RedemptionCampaignRow | null | undefined,
   options: {
     db?: Db | Tx;
     validationRule?: RedemptionValidationRuleRow | null;
     customer?: RedemptionCustomerRow | null;
     customerId?: string;
     customerRefProvided?: boolean;
+    responseCurrency: string;
     now?: Date;
-  } = {},
+  },
 ): Promise<ValidateResult> {
   if (!voucher) {
     return {
@@ -408,7 +430,12 @@ export async function validateVoucher(
     };
   }
 
-  const campaignFailure = checkCampaignActivation(campaign, order?.currency, now);
+  const campaignFailure = checkCampaignActivation(
+    campaign,
+    voucher.campaignId,
+    order?.currency,
+    now,
+  );
   if (campaignFailure) {
     return {
       valid: false,
@@ -429,7 +456,7 @@ export async function validateVoucher(
   if (ruleFailure) return ruleFailure;
 
   if (voucher.type === "GIFT_CARD") {
-    const gp = previewGiftCard(voucher, order);
+    const gp = previewGiftCard(voucher, order, options.responseCurrency);
     if (!gp) {
       return {
         valid: false,
@@ -444,7 +471,7 @@ export async function validateVoucher(
     };
   }
 
-  const preview = previewDiscount(voucher, order);
+  const preview = previewDiscount(voucher, order, options.responseCurrency);
   const amount = preview.appliedDiscounts.reduce((s, a) => s + a.amount, 0);
   if (order && amount <= 0 && (voucher.customRewards?.length ?? 0) === 0) {
     return {
@@ -480,6 +507,8 @@ export function messageFor(code: RedemptionFailureCode): string {
       return "A customer is required to use this voucher";
     case "customer_mismatch":
       return "Voucher is assigned to a different customer";
+    case "customer_not_found":
+      return "Customer not found";
     case "validation_failed":
       return "Voucher validation rule did not match";
     case "currency_mismatch":

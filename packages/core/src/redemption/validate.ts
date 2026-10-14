@@ -1,7 +1,7 @@
 import { and, eq, isNull } from "drizzle-orm";
 import { schema, type Db } from "@offerkit/db";
 import { withSpan } from "../observability/index.ts";
-import { resolveCustomerRef, validateVoucher } from "./shared.ts";
+import { getWorkspaceCurrency, messageFor, resolveCustomerRef, validateVoucher } from "./shared.ts";
 import type {
   RedemptionCustomerRow,
   RedemptionCampaignRow,
@@ -30,7 +30,12 @@ async function validateImpl(db: Db, input: ValidateInput): Promise<ValidateResul
     .where(and(eq(schema.voucher.code, input.voucherCode), isNull(schema.voucher.deletedAt)))
     .limit(1)) as VoucherRow[];
   const voucher = row[0];
-  if (!voucher) return validateVoucher(voucher, input.order, undefined, { db });
+  if (!voucher) {
+    return validateVoucher(voucher, input.order, undefined, {
+      db,
+      responseCurrency: input.order?.currency ?? (await getWorkspaceCurrency(db)),
+    });
+  }
   const campaign = voucher?.campaignId
     ? ((await db.query.campaign.findFirst({
         where: and(eq(schema.campaign.id, voucher.campaignId), isNull(schema.campaign.deletedAt)),
@@ -56,6 +61,13 @@ async function validateImpl(db: Db, input: ValidateInput): Promise<ValidateResul
       message: "Voucher can only be redeemed by the assigned customer",
     };
   }
+  if (resolvedCustomer.notFound) {
+    return {
+      valid: false,
+      code: "customer_not_found",
+      message: messageFor("customer_not_found"),
+    };
+  }
   const customerId = resolvedCustomer.customerId ?? voucher?.customerId ?? undefined;
   const customer =
     resolvedCustomer.customer ??
@@ -66,6 +78,8 @@ async function validateImpl(db: Db, input: ValidateInput): Promise<ValidateResul
       : undefined);
   return validateVoucher(voucher, input.order, campaign, {
     db,
+    responseCurrency:
+      input.order?.currency ?? campaign?.currency ?? (await getWorkspaceCurrency(db)),
     validationRule,
     customer,
     customerId: resolvedCustomer.customerId,

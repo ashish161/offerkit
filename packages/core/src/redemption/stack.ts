@@ -87,6 +87,14 @@ async function stackRedeemImpl(
         explanations: [failureExplanation("customer_mismatch")],
       };
     }
+    if (resolvedCustomer.notFound) {
+      return {
+        ok: false,
+        code: "customer_not_found",
+        message: messageFor("customer_not_found"),
+        explanations: [failureExplanation("customer_not_found")],
+      };
+    }
     const resolvedCustomerId = resolvedCustomer.customerId;
 
     if (input.idempotencyKey) {
@@ -168,7 +176,12 @@ async function stackRedeemImpl(
         };
       }
       const campaign = v.campaignId ? campaignById.get(v.campaignId) : undefined;
-      const campaignFailure = checkCampaignActivation(campaign, input.order.currency, now);
+      const campaignFailure = checkCampaignActivation(
+        campaign,
+        v.campaignId,
+        input.order.currency,
+        now,
+      );
       if (campaignFailure) {
         return {
           ok: false,

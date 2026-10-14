@@ -1,5 +1,6 @@
 import type { ComponentType } from "react";
 import {
+  BadgeCheck,
   BarChart3,
   Boxes,
   Cable,
@@ -14,6 +15,7 @@ import {
   ScrollText,
   Settings,
   ShoppingBag,
+  Store,
   TicketPercent,
   UserPlus,
   Users,
@@ -80,6 +82,12 @@ export const dashboardSections: DashboardSection[] = [
         label: "Vouchers",
         description: "Issued codes, balances, redemption tests, and status changes.",
         icon: TicketPercent,
+      },
+      {
+        href: "/redemptions",
+        label: "Redemptions",
+        description: "Ledger of every voucher redemption attempt, success or failure.",
+        icon: BadgeCheck,
       },
       {
         href: "/orders",
@@ -169,6 +177,13 @@ export const dashboardSections: DashboardSection[] = [
         label: "Users",
         description: "Admin-only staff accounts and role management.",
         icon: Boxes,
+        adminOnly: true,
+      },
+      {
+        href: "/settings/brands",
+        label: "Brands",
+        description: "Loyalty brands, their programs and terminal PINs.",
+        icon: Store,
         adminOnly: true,
       },
       {

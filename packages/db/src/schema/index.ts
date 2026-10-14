@@ -11,6 +11,7 @@ export * from "./loyalty.ts";
 export * from "./order.ts";
 export * from "./oauth.ts";
 export * from "./promotion-tier.ts";
+export * from "./qr-brand.ts";
 export * from "./referral.ts";
 export * from "./redemption.ts";
 export * from "./reward-type.ts";

@@ -510,6 +510,18 @@ export async function scanEarn(db: Db, input: ScanEarnInput): Promise<LoyaltyRes
     };
   }
 
+  // Points expiry: when the program sets `pointsExpiryDays`, stamp the ledger
+  // row so the daily `expirePoints` sweep can later remove unspent points.
+  // A null/absent value means points never expire.
+  const [program] = await db
+    .select({ pointsExpiryDays: schema.loyaltyProgram.pointsExpiryDays })
+    .from(schema.loyaltyProgram)
+    .where(eq(schema.loyaltyProgram.id, creditMember.programId))
+    .limit(1);
+  const expiryDays = program?.pointsExpiryDays ?? null;
+  const expiresAt =
+    expiryDays && expiryDays > 0 ? new Date(Date.now() + expiryDays * 24 * 60 * 60 * 1000) : undefined;
+
   let orderId: string | null = null;
   let result: LoyaltyResult<EarnOutcome>;
   try {
@@ -519,6 +531,7 @@ export async function scanEarn(db: Db, input: ScanEarnInput): Promise<LoyaltyRes
       earningRuleId: rule?.id,
       eventId,
       note: input.note ?? `QR scan · bill ${billNumber}`,
+      expiresAt,
       onEarned: async (outcome, tx) => {
         // Mirror the scanned bill as an OfferKit order so operators can search it
         // in the dashboard. We have no POS integration, so this scan IS the only

@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { and, desc, eq, sql } from "drizzle-orm";
 import { schema, type Db } from "@offerkit/db";
-import { ensureCardCode } from "@offerkit/core/loyalty";
+import { billEventId, ensureCardCode } from "@offerkit/core/loyalty";
 import { handleScan } from "@/server/qr-loyalty/scan";
 import {
   E2E_ENABLED,
@@ -364,5 +364,76 @@ describe.skipIf(!E2E_ENABLED)("qr scan: card code → bill amount → points", (
     expect(mine?.cardCode).toBe(cardCode);
     // 250 + 10 + 50 + 100 (phone) + 10 (card precedence) + 100 (event) + 100 (concurrent) = 620
     expect(mine?.balance).toBe(620);
+  });
+});
+
+describe.skipIf(!E2E_ENABLED)("qr scan: program points expiry", () => {
+  async function createProgram(pointsExpiryDays?: number): Promise<string> {
+    if (!token || !db) throw new Error("setup failed");
+    const client = makeClient(token);
+    const campaign = await client.campaigns.create({
+      name: randomId("camp-exp"),
+      type: "LOYALTY_PROGRAM",
+      currency: "INR",
+    });
+    const program = await client.loyalty.programs.create({
+      campaignId: campaign.id,
+      ...(pointsExpiryDays === undefined ? {} : { pointsExpiryDays }),
+    });
+    // 1 point per ₹1 (amountMinor / 100)
+    await client.loyalty.earningRules.create({
+      programId: program.id,
+      name: "₹1 per point",
+      event: "qr.scan",
+      formula: { kind: "per_cents", divisor: 100 },
+    });
+    return program.id;
+  }
+
+  async function enrollMember(programId: string): Promise<string> {
+    if (!token || !db) throw new Error("setup failed");
+    const client = makeClient(token);
+    const customer = await client.customers.create({
+      name: randomId("exp-cust"),
+      email: `${randomId("expc")}@example.com`,
+    });
+    const member = await client.loyalty.members.enroll({
+      programId,
+      customerId: customer.id,
+    });
+    return ensureCardCode(db, member.id);
+  }
+
+  it("stamps the ledger expires_at at now + program.pointsExpiryDays", async () => {
+    if (!db) throw new Error("no db");
+    const programId = await createProgram(90);
+    const cardCode = await enrollMember(programId);
+    const billNumber = `${prefix}-exp90`;
+
+    const res = await scanRequest({ cardCode, amount: 1000, billNumber });
+    expect(res.status).toBe(200);
+
+    const txn = await db.query.loyaltyTransaction.findFirst({
+      where: eq(schema.loyaltyTransaction.eventId, billEventId(billNumber)),
+    });
+    if (!txn?.expiresAt) throw new Error("expected expires_at to be set on the earned points");
+    const ttlDays = (txn.expiresAt.getTime() - Date.now()) / 86_400_000;
+    expect(ttlDays).toBeGreaterThan(89);
+    expect(ttlDays).toBeLessThan(91);
+  });
+
+  it("leaves expires_at null when the program has no expiry configured", async () => {
+    if (!db) throw new Error("no db");
+    const programId = await createProgram(undefined);
+    const cardCode = await enrollMember(programId);
+    const billNumber = `${prefix}-expnone`;
+
+    const res = await scanRequest({ cardCode, amount: 1000, billNumber });
+    expect(res.status).toBe(200);
+
+    const txn = await db.query.loyaltyTransaction.findFirst({
+      where: eq(schema.loyaltyTransaction.eventId, billEventId(billNumber)),
+    });
+    expect(txn?.expiresAt ?? null).toBeNull();
   });
 });
